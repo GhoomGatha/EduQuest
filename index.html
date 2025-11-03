@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EduQuest</title>
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Inter:wght@400;500;600&family=Dancing+Script:wght@700&family=Noto+Sans+Bengali:wght@400;700&family=Noto+Sans+Devanagari:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+    }
+    .font-serif-display {
+      font-family: 'Playfair Display', serif;
+    }
+    @keyframes beat {
+      0%, 100% {
+        transform: scale(1);
+      }
+      50% {
+        transform: scale(1.2); /* Softer beat */
+      }
+    }
+    .animate-beat {
+      animation: beat 1.8s infinite ease-in-out; /* Slower and smoother */
+      display: inline-block; /* Necessary for transforms */
+    }
+    @keyframes text-color-cycle {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+    .animate-text-color-cycle {
+      background-image: linear-gradient(-45deg, #6366f1, #a855f7, #ec4899, #f59e0b, #10b981, #3b82f6);
+      background-size: 600% 600%;
+      background-clip: text;
+      -webkit-background-clip: text;
+      color: transparent;
+      animation: text-color-cycle 12s ease infinite;
+    }
+    .animate-beat.animate-text-color-cycle {
+      animation: beat 1.8s infinite ease-in-out, text-color-cycle 12s ease infinite; /* Slower and smoother */
+    }
+
+    @keyframes lens-glint {
+      0% {
+        transform: rotate(25deg) translateX(-250%);
+      }
+      20% {
+        transform: rotate(25deg) translateX(250%);
+      }
+      100% {
+        transform: rotate(25deg) translateX(250%);
+      }
+    }
+
+    .equipment-title-container {
+      display: inline-flex;
+      align-items: center;
+      animation: subtle-float 6s ease-in-out infinite;
+    }
+
+    .microscope-emoji {
+      position: relative;
+      display: inline-block;
+      overflow: hidden; /* Crucial for the glint effect */
+    }
+
+    .microscope-emoji::after {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 20%;
+      height: 200%;
+      background: linear-gradient(
+        to right,
+        rgba(255, 255, 255, 0) 0%,
+        rgba(255, 255, 255, 0.5) 50%,
+        rgba(255, 255, 255, 0) 100%
+      );
+      transform: rotate(25deg) translateX(-250%);
+      animation: lens-glint 5s ease-in-out infinite;
+      animation-delay: 1.5s; /* Stagger the animation start */
+    }
+    
+    .love-letter-modal {
+      font-family: 'Dancing Script', cursive;
+      background-color: #fdfaf3; /* Parchment color */
+      border: 1px solid #dcd0b8;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2), 0 0 0 10px #fdfaf3, 0 0 0 11px #dcd0b8;
+    }
+
+    .love-letter-content h3 {
+      font-family: 'Playfair Display', serif;
+      color: #5a3a2e; /* Dark brown */
+      text-align: center;
+      font-size: 1.75rem;
+      margin-bottom: 1rem;
+    }
+
+    .love-letter-content p {
+      color: #6b4f44;
+      line-height: 1.8;
+      font-size: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .love-letter-content .signature {
+      text-align: right;
+      font-style: italic;
+    }
+
+    /* Secret Message Emoji Animations */
+    @keyframes sway {
+      0%, 100% { transform: rotate(-3deg); }
+      50% { transform: rotate(3deg); }
+    }
+    .animate-sway {
+      animation: sway 3s ease-in-out infinite;
+      display: inline-block;
+    }
+    @keyframes sparkle {
+      0%, 100% {
+        text-shadow: 0 0 5px #fff, 0 0 10px #fff, 0 0 15px #ffd700, 0 0 20px #ffd700;
+        transform: scale(1);
+      }
+      50% {
+        text-shadow: 0 0 10px #fff, 0 0 20px #fff, 0 0 30px #ffd700, 0 0 40px #ffd700;
+        transform: scale(1.1);
+      }
+    }
+    .animate-sparkle {
+      animation: sparkle 2.5s ease-in-out infinite;
+      display: inline-block;
+    }
+    @keyframes spin-pulse {
+      0% { transform: scale(1) rotate(0deg); }
+      50% { transform: scale(1.2) rotate(180deg); }
+      100% { transform: scale(1) rotate(360deg); }
+    }
+    .animate-spin-pulse {
+      animation: spin-pulse 4s linear infinite;
+      display: inline-block;
+    }
+    @keyframes glow {
+      0%, 100% { opacity: 0.7; transform: scale(0.95); }
+      50% { opacity: 1; transform: scale(1.1); }
+    }
+    .animate-glow {
+      animation: glow 2s ease-in-out infinite;
+      display: inline-block;
+    }
+    @keyframes slow-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .animate-slow-spin {
+      animation: slow-spin 8s linear infinite;
+      display: inline-block;
+    }
+    @keyframes bobbing {
+      0%, 100% {
+        transform: translateY(0);
+      }
+      50% {
+        transform: translateY(-3px);
+      }
+    }
+    .animate-bobbing {
+      animation: bobbing 2.5s ease-in-out infinite;
+      display: inline-block;
+    }
+
+    /* Hide scrollbar but allow scrolling */
+    .no-scrollbar::-webkit-scrollbar {
+        display: none;
+    }
+    .no-scrollbar {
+        -ms-overflow-style: none;  /* IE and Edge */
+        scrollbar-width: none;  /* Firefox */
+    }
+  </style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.27.0",
+    "@supabase/supabase-js": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm"
+  }
+}
+</script>
+</head>
+<body class="bg-slate-100 text-slate-800">
+  <div id="root"></div>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
