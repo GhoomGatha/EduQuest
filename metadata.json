@@ -1,5 +1,5 @@
 {
-  "name": "EduQuest v1.0",
+  "name": "EduQuest",
   "description": "A modern, mobile-first web application for teachers to manage, generate, and archive question papers. It features AI-powered question generation, duplicate detection, and robust organization tools to streamline exam preparation.",
   "requestFramePermissions": [
     "camera"
