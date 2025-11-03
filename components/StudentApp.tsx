@@ -1,8 +1,7 @@
-
 import React, { useState, useEffect, useCallback, lazy, Suspense, useMemo } from 'react';
-import { useAuth } from '../../hooks/useAuth';
+import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../services/supabaseClient';
-import { Paper, TestAttempt, StudentTab, Language, Profile, Question, QuestionSource, Semester, Difficulty } from '../types';
+import { Paper, TestAttempt, StudentTab, Language, Profile, Question, QuestionSource, Semester, Difficulty, TutorSession } from '../types';
 import { STUDENT_ATTEMPTS_KEY } from '../constants';
 import { t } from '../utils/localization';
 import LoadingSpinner from './LoadingSpinner';
@@ -16,6 +15,7 @@ const PracticeTest = lazy(() => import('./student/PracticeTest'));
 const TestResults = lazy(() => import('./student/TestResults'));
 const Settings = lazy(() => import('./student/Settings'));
 const PracticeZone = lazy(() => import('./student/PracticeZone'));
+const AITutor = lazy(() => import('./student/AITutor'));
 
 const LANGUAGE_STORAGE_KEY = 'eduquest_lang';
 const API_KEY_STORAGE_KEY = 'eduquest_user_api_key';
@@ -28,6 +28,7 @@ type ViewState =
     | { view: 'dashboard' }
     | { view: 'results'; attemptId?: string }
     | { view: 'practice' }
+    | { view: 'ai_tutor' }
     | { view: 'settings' }
     | { view: 'test'; paper: Paper };
 
@@ -38,6 +39,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   
   const [papers, setPapers] = useState<Paper[]>([]);
   const [attempts, setAttempts] = useState<TestAttempt[]>([]);
+  const [tutorSessions, setTutorSessions] = useState<TutorSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [lang, setLang] = useState<Language>('en');
   const [userApiKey, setUserApiKey] = useState<string>('');
@@ -94,11 +96,27 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
     return data.map(row => ({ ...row.attempt_data, db_id: row.id })) || [];
   }, [session, showToast]);
 
+  const fetchTutorSessions = useCallback(async () => {
+    if (!session?.user) return;
+    const { data, error } = await supabase
+        .from('tutor_sessions')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .order('created_at', { ascending: false });
+    
+    if (error) {
+        console.error("Failed to fetch tutor sessions", error);
+        showToast("Could not load AI Tutor history.", 'error');
+    } else {
+        setTutorSessions(data || []);
+    }
+  }, [session, showToast]);
+
 
   useEffect(() => {
     const loadData = async () => {
         setLoading(true);
-        await fetchPapers();
+        await Promise.all([fetchPapers(), fetchTutorSessions()]);
         const dbAttempts = await fetchAttempts();
 
         // One-time migration from localStorage
@@ -144,11 +162,11 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
     // Ensure both session and profile are loaded before fetching any user-specific data.
     if (session?.user && profile?.id) {
         loadData();
-    } else {
+    } else if (!session?.user) {
         // If there's no user, we can stop loading as there's no data to fetch.
         setLoading(false);
     }
-  }, [session, profile, fetchPapers, fetchAttempts, showToast]);
+  }, [session, profile, fetchPapers, fetchAttempts, fetchTutorSessions, showToast]);
 
 
   const handleTestComplete = async (attempt: TestAttempt) => {
@@ -233,13 +251,14 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
 
   const handleClearData = async () => {
       if(window.confirm(t('clearWarning', lang))) {
-        const { error } = await supabase.from('student_test_attempts').delete().eq('user_id', session!.user.id);
-        if(error){
-            showToast('Could not clear data.', 'error');
-        } else {
-            setAttempts([]);
-            showToast(t('dataCleared', lang), 'error');
-        }
+        await supabase.from('student_test_attempts').delete().eq('user_id', session!.user.id);
+        await supabase.from('student_generated_content').delete().eq('user_id', session!.user.id);
+        await supabase.from('tutor_sessions').delete().eq('user_id', session!.user.id);
+        
+        setAttempts([]);
+        setTutorSessions([]);
+        // We don't clear study materials from state here, as it's fetched on dashboard mount.
+        showToast(t('dataCleared', lang), 'error');
       }
   };
 
@@ -310,6 +329,52 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
         setAttempts(prev => prev.map(a => a.db_id === db_id ? updatedAttempt : a));
     }
   };
+  
+  const handleSaveTutorResponse = async (queryText: string, queryImageUrl: string | null, responseText: string, tutorClass: number) => {
+    if (!session?.user) {
+        showToast("You must be logged in to save sessions.", 'error');
+        return;
+    }
+    const { data, error } = await supabase
+        .from('tutor_sessions')
+        .insert({
+            user_id: session.user.id,
+            query_text: queryText,
+            query_image_url: queryImageUrl,
+            response_text: responseText,
+            tutor_class: tutorClass
+        })
+        .select()
+        .single();
+    
+    if (error || !data) {
+        console.error("Error saving tutor session:", error);
+        showToast("Failed to save tutor session.", 'error');
+    } else {
+        setTutorSessions(prev => [data, ...prev]);
+        showToast("Session saved!", 'success');
+    }
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    if (!session?.user) {
+        showToast("You must be logged in to delete sessions.", 'error');
+        return;
+    }
+    const { error } = await supabase
+        .from('tutor_sessions')
+        .delete()
+        .eq('id', sessionId)
+        .eq('user_id', session.user.id);
+
+    if (error) {
+        console.error("Error deleting tutor session:", error);
+        showToast("Failed to delete session.", 'error');
+    } else {
+        setTutorSessions(prev => prev.filter(s => s.id !== sessionId));
+        showToast("Session deleted.", 'success');
+    }
+  };
 
   const handleTabChange = (tab: StudentTab) => {
     setViewState({ view: tab });
@@ -318,7 +383,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   const getActiveTab = (): StudentTab => {
     if(viewState.view === 'test') return 'dashboard'; // Or 'practice'
     if(viewState.view === 'results' && viewState.attemptId) return 'results';
-    if (viewState.view === 'dashboard' || viewState.view === 'results' || viewState.view === 'settings' || viewState.view === 'practice') {
+    if (viewState.view === 'dashboard' || viewState.view === 'results' || viewState.view === 'settings' || viewState.view === 'practice' || viewState.view === 'ai_tutor') {
         return viewState.view;
     }
     return 'dashboard';
@@ -350,6 +415,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
                     onViewResult={(attempt) => setViewState({ view: 'results', attemptId: attempt.paperId + attempt.completedAt })}
                     userApiKey={userApiKey}
                     userOpenApiKey={userOpenApiKey}
+                    showToast={showToast}
                 />
             </div>
             <div style={{ display: currentView === 'results' ? 'block' : 'none' }}>
@@ -374,6 +440,17 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
                     showToast={showToast}
                     userApiKey={userApiKey}
                     userOpenApiKey={userOpenApiKey}
+                />
+            </div>
+             <div style={{ display: currentView === 'ai_tutor' ? 'block' : 'none' }}>
+                <AITutor
+                    lang={lang}
+                    showToast={showToast}
+                    userApiKey={userApiKey}
+                    userOpenApiKey={userOpenApiKey}
+                    sessions={tutorSessions}
+                    onSaveResponse={handleSaveTutorResponse}
+                    onDeleteSession={handleDeleteSession}
                 />
             </div>
             <div style={{ display: currentView === 'settings' ? 'block' : 'none' }}>

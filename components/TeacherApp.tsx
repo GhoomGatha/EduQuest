@@ -1,24 +1,26 @@
+
 import React, { useState, useEffect, useCallback, useRef, lazy, Suspense, useMemo } from 'react';
-import { Question, Paper, Tab, Language, Profile, QuestionSource, Difficulty, Semester, UploadProgress } from '../types';
-import { t } from '../utils/localization';
-import { TABS, LOCAL_STORAGE_KEY } from '../constants';
-import Modal from './Modal';
-import QuestionForm from './QuestionForm';
-import { useAuth } from '../hooks/useAuth';
-import { supabase } from '../services/supabaseClient';
-import LoadingSpinner from './LoadingSpinner';
-import SecretMessageModal from './SecretMessageModal';
-import { OPENAI_API_KEY_STORAGE_KEY } from '../services/openaiService';
-import { extractQuestionsFromImageAI, extractQuestionsFromPdfAI } from '../services/geminiService';
+import { Question, Paper, Tab, Language, Profile, QuestionSource, Difficulty, Semester, UploadProgress, TutorSession } from './types';
+import { t } from './utils/localization';
+import { TABS, LOCAL_STORAGE_KEY } from './constants';
+import Modal from './components/Modal';
+import QuestionForm from './components/QuestionForm';
+import { useAuth } from './hooks/useAuth';
+import { supabase } from './services/supabaseClient';
+import LoadingSpinner from './components/LoadingSpinner';
+import SecretMessageModal from './components/SecretMessageModal';
+import { OPENAI_API_KEY_STORAGE_KEY } from './services/openaiService';
+// FIX: Import the newly created extractQuestionsFromTextAI function.
+import { extractQuestionsFromImageAI, extractQuestionsFromPdfAI, extractQuestionsFromTextAI } from './services/geminiService';
 
-const QuestionBank = lazy(() => import('./QuestionBank'));
-const PaperGenerator = lazy(() => import('./PaperGenerator'));
-const AITutor = lazy(() => import('./AITutor'));
-const ExamArchive = lazy(() => import('./ExamArchive'));
-const Settings = lazy(() => import('./Settings'));
+const QuestionBank = lazy(() => import('./components/QuestionBank'));
+const PaperGenerator = lazy(() => import('./components/PaperGenerator'));
+const AITutor = lazy(() => import('./components/AITutor'));
+const ExamArchive = lazy(() => import('./components/ExamArchive'));
+const Settings = lazy(() => import('./components/Settings'));
 
-const API_KEY_STORAGE_KEY = 'bioquest_user_api_key';
-const LANGUAGE_STORAGE_KEY = 'bioquest_lang';
+const API_KEY_STORAGE_KEY = 'eduquest_user_api_key';
+const LANGUAGE_STORAGE_KEY = 'eduquest_lang';
 
 const tabIconAnimations: Record<Tab, string> = {
   bank: 'animate-glow',
@@ -85,6 +87,7 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
   const [lang, setLang] = useState<Language>('en');
   const [questions, setQuestions] = useState<Question[]>([]);
   const [papers, setPapers] = useState<Paper[]>([]);
+  const [tutorSessions, setTutorSessions] = useState<TutorSession[]>([]);
   const [isModalOpen, setModalOpen] = useState(false);
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
   const [userApiKey, setUserApiKey] = useState<string>('');
@@ -93,10 +96,7 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
   const longPressTimer = useRef<number | null>(null);
   const navRef = useRef<HTMLDivElement>(null);
   const [sliderStyle, setSliderStyle] = useState({});
-  const pdfUploadRef = useRef<HTMLInputElement>(null);
-  const csvUploadRef = useRef<HTMLInputElement>(null);
-  const [isUploadingPdf, setIsUploadingPdf] = useState(false);
-  const [isUploadingCsv, setIsUploadingCsv] = useState(false);
+  const [isProcessingFile, setIsProcessingFile] = useState(false);
 
   const allVisibleQuestions = useMemo(() => {
     // Get all questions that are inside paper objects
@@ -178,6 +178,14 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
           .select('*')
           .eq('user_id', session.user.id);
         if (pError) throw new Error(`Failed to fetch papers: ${pError.message}`);
+
+        const { data: tutorSessionsData, error: tError } = await supabase
+            .from('tutor_sessions')
+            .select('*')
+            .eq('user_id', session.user.id)
+            .order('created_at', { ascending: false });
+        if (tError) throw new Error(`Failed to fetch tutor sessions: ${tError.message}`);
+        setTutorSessions(tutorSessionsData || []);
 
         const localDataRaw = localStorage.getItem(LOCAL_STORAGE_KEY);
         if (localDataRaw) {
@@ -271,7 +279,7 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
 
   const handleDeleteQuestion = async (id: string) => {
     if (!session?.user) return;
-    const { error } = await supabase.from('questions').delete().match({ id: id, user_id: session.user.id });
+    const { error } = await supabase.from('questions').delete().eq('id', id).eq('user_id', session.user.id);
     if (error) {
       showToast('Error deleting question.', 'error');
     } else {
@@ -305,13 +313,18 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
             return;
         }
 
-        const { data: urlData } = supabase.storage.from('question_images').getPublicUrl(filePath);
+        // FIX: Await the async getPublicUrl call and add a null check for robustness.
+        const { data: urlData } = await supabase.storage.from('question_images').getPublicUrl(filePath);
+        if (!urlData?.publicUrl) {
+            showToast('Error getting image public URL.', 'error');
+            return;
+        }
         finalQuestionData.image_data_url = urlData.publicUrl;
     }
 
     if (editingQuestion) {
       const { id, ...questionToUpdate } = { ...finalQuestionData, user_id: session.user.id };
-      const { data, error } = await supabase.from('questions').update(questionToUpdate).match({ id: finalQuestionData.id }).select();
+      const { data, error } = await supabase.from('questions').update(questionToUpdate).eq('id', finalQuestionData.id).select();
       if (error || !data) {
         showToast('Error updating question.', 'error');
       } else {
@@ -370,81 +383,98 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
   const handleSavePaper = async (paper: Paper) => {
     if (!session?.user) return;
 
-    const bankQuestions = paper.questions.filter(q => q.source !== QuestionSource.Generated);
-    const newAiQuestions = paper.questions.filter(q => q.source === QuestionSource.Generated);
-    let savedNewQuestions: Question[] = [];
+    try {
+        const bankQuestions = paper.questions.filter(q => q.source !== QuestionSource.Generated);
+        const newAiQuestions = paper.questions.filter(q => q.source === QuestionSource.Generated);
+        let savedNewQuestions: Question[] = [];
 
-    if (newAiQuestions.length > 0) {
-        try {
-            const processedNewQuestions = await Promise.all(
-                newAiQuestions.map(async (q) => {
-                    if (q.image_data_url && q.image_data_url.startsWith('data:')) {
-                        const blob = dataURLtoBlob(q.image_data_url);
-                        if (blob) {
-                            const fileExt = blob.type.split('/')[1] || 'png';
-                            const filePath = `${session.user.id}/${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
-                            const { error: uploadError } = await supabase.storage.from('question_images').upload(filePath, blob);
-                            if (uploadError) throw new Error(`Image upload failed: ${uploadError.message}`);
-                            const { data: urlData } = supabase.storage.from('question_images').getPublicUrl(filePath);
-                            return { ...q, image_data_url: urlData.publicUrl };
+        if (newAiQuestions.length > 0) {
+            try {
+                const processedNewQuestions = await Promise.all(
+                    newAiQuestions.map(async (q) => {
+                        if (q.image_data_url && q.image_data_url.startsWith('data:')) {
+                            const blob = dataURLtoBlob(q.image_data_url);
+                            if (blob) {
+                                const fileExt = blob.type.split('/')[1] || 'png';
+                                const filePath = `${session.user.id}/${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
+                                const { error: uploadError } = await supabase.storage.from('question_images').upload(filePath, blob);
+                                if (uploadError) throw new Error(`Image upload failed: ${uploadError.message}`);
+                                // FIX: Await the async getPublicUrl call and add a null check to prevent errors.
+                                const { data: urlData } = await supabase.storage.from('question_images').getPublicUrl(filePath);
+                                if (!urlData?.publicUrl) {
+                                    throw new Error('Could not get public URL for image.');
+                                }
+                                return { ...q, image_data_url: urlData.publicUrl };
+                            }
                         }
-                    }
-                    return q;
-                })
-            );
+                        return q;
+                    })
+                );
 
-            const questionsToInsert = processedNewQuestions.map(({ id, ...q }) => ({ ...q, user_id: session.user.id }));
-            const { data, error } = await supabase.from('questions').insert(questionsToInsert).select();
-            if (error) throw error;
-            savedNewQuestions = data;
-            setQuestions(prev => [...savedNewQuestions, ...prev]);
-        } catch (error: any) {
-            showToast('Error saving new AI questions to bank.', 'error');
-            console.error("Error processing new questions:", error.message || error);
-            return;
-        }
-    }
-
-    const finalPaperQuestions = [...bankQuestions, ...savedNewQuestions];
-
-    const paperToInsert = {
-        user_id: session.user.id,
-        title: paper.title,
-        year: paper.year,
-        class: paper.class,
-        semester: paper.semester,
-        source: paper.source,
-        file_types: paper.file_types || null,
-        text: paper.text || null,
-        data_urls: paper.data_urls || null,
-        questions: finalPaperQuestions,
-        created_at: paper.created_at,
-        grounding_sources: paper.grounding_sources || null,
-    };
-
-    const { data: savedPaper, error } = await supabase.from('papers').insert(paperToInsert).select().single();
-    
-    if (error) {
-        const isSchemaError = error.message.includes("grounding_sources") && error.message.includes("column");
-        if (isSchemaError) {
-            console.warn("Attempting to save paper without 'grounding_sources' due to schema mismatch.");
-            showToast('Saving without grounding sources due to outdated database schema. Please see Settings to update.', 'error');
-            const { grounding_sources, ...fallbackPaperToInsert } = paperToInsert;
-            const { data: fallbackSavedPaper, error: fallbackError } = await supabase.from('papers').insert(fallbackPaperToInsert).select().single();
-            if (fallbackError) {
-                showToast("Error saving paper.", 'error');
-                console.error("Fallback paper save error:", fallbackError?.message);
+                const questionsToInsert = processedNewQuestions.map(({ id, ...q }) => ({ ...q, user_id: session.user.id }));
+                const { data, error } = await supabase.from('questions').insert(questionsToInsert).select();
+                if (error) throw error;
+                savedNewQuestions = data || [];
+                setQuestions(prev => [...(data || []), ...prev]);
+            } catch (error: any) {
+                showToast('Error saving new AI questions to bank.', 'error');
+                console.error("Error processing new questions:", error.message || error);
                 return;
             }
-            await postSavePaperProcessing(fallbackSavedPaper as Paper, paper);
-        } else {
-            showToast("Error saving paper.", 'error');
-            console.error("Error saving paper:", error?.message || "Unknown error occurred.");
         }
-        return;
-    }
+
+        const finalPaperQuestions = [...bankQuestions, ...savedNewQuestions];
+
+        const paperToInsert = {
+            user_id: session.user.id,
+            title: paper.title,
+            year: paper.year,
+            class: paper.class,
+            semester: paper.semester,
+            board: paper.board || null,
+            source: paper.source,
+            file_types: paper.file_types || null,
+            text: paper.text || null,
+            data_urls: paper.data_urls || null,
+            questions: finalPaperQuestions,
+            created_at: paper.created_at,
+            grounding_sources: paper.grounding_sources || null,
+        };
+
+        const { data: savedPaper, error } = await supabase.from('papers').insert(paperToInsert).select().single();
+        
+        if (error) {
+            const isSchemaError = error.message.includes("grounding_sources") && error.message.includes("column");
+            if (isSchemaError) {
+                console.warn("Attempting to save paper without 'grounding_sources' due to schema mismatch.");
+                showToast('Saving without grounding sources due to outdated database schema. Please see Settings to update.', 'error');
+                const { grounding_sources, ...fallbackPaperToInsert } = paperToInsert;
+                const { data: fallbackSavedPaper, error: fallbackError } = await supabase.from('papers').insert(fallbackPaperToInsert).select().single();
+                
+                if (fallbackError) {
+                    throw fallbackError;
+                }
+                
+                if (!fallbackSavedPaper) {
+                    throw new Error("Error saving paper: could not retrieve the record after creation.");
+                }
+                await postSavePaperProcessing(fallbackSavedPaper as Paper, paper);
+            } else {
+                throw error;
+            }
+            return;
+        }
+      
+        if (!savedPaper) {
+            throw new Error("Error saving paper: could not retrieve the record after creation.");
+        }
   
-    await postSavePaperProcessing(savedPaper as Paper, paper);
+        await postSavePaperProcessing(savedPaper as Paper, paper);
+
+    } catch (e: any) {
+        console.error("An unexpected error occurred in handleSavePaper:", e);
+        showToast(e.message || "An unexpected error occurred while saving the paper.", "error");
+    }
   };
   
   const handleDeletePaper = async (id: string) => {
@@ -452,7 +482,7 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
     const paperToDelete = papers.find(p => p.id === id);
     if (!paperToDelete) return;
 
-    const { error } = await supabase.from('papers').delete().match({ id, user_id: session.user.id });
+    const { error } = await supabase.from('papers').delete().eq('id', id).eq('user_id', session.user.id);
     if(error){
         showToast('Error deleting paper.', 'error');
         return;
@@ -477,7 +507,8 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
     try {
         if (!session?.user) throw new Error('User not authenticated.');
 
-        const paperId = paper.id;
+        const { id: clientSideId, ...paperData } = paper;
+        const paperFolderId = clientSideId;
         let allExtractedQuestions: Partial<Question>[] = [];
         const uploadedFileUrls: string[] = [];
 
@@ -487,7 +518,7 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
             
             onProgress({ total: files.length, completed: i, pending: files.length - i, currentFile: file.name });
 
-            const MAX_FILE_SIZE_MB = 2;
+            const MAX_FILE_SIZE_MB = 20; // FIX: Increased file size limit for PDFs
             if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
                 throw new Error(`File ${file.name} is too large (max ${MAX_FILE_SIZE_MB}MB).`);
             }
@@ -503,10 +534,14 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
             }
             allExtractedQuestions.push(...extracted);
 
-            const storageFilePath = `${session.user.id}/${paperId}/${file.name}`;
+            const storageFilePath = `${session.user.id}/${paperFolderId}/${file.name}`;
             const { error: storageUploadError } = await supabase.storage.from('papers').upload(storageFilePath, file, { upsert: true });
             if (storageUploadError) throw storageUploadError;
-            const { data: urlData } = supabase.storage.from('papers').getPublicUrl(storageFilePath);
+            // FIX: Await the async getPublicUrl call and add a null check for robustness.
+            const { data: urlData } = await supabase.storage.from('papers').getPublicUrl(storageFilePath);
+            if (!urlData?.publicUrl) {
+                throw new Error(`Could not get public URL for ${file.name}`);
+            }
             uploadedFileUrls.push(urlData.publicUrl);
         }
 
@@ -523,11 +558,10 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
             const { data, error } = await supabase.from('questions').insert(questionsToInsert).select();
             if (error) throw new Error(`Failed to save extracted questions: ${error.message}`);
             savedQuestions = data || [];
-            setQuestions(prev => [...savedQuestions, ...prev]);
         }
         
         const paperToInsert = { 
-            ...paper, 
+            ...paperData, 
             user_id: session.user.id, 
             questions: savedQuestions, 
             data_urls: uploadedFileUrls, 
@@ -536,13 +570,28 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
         const { data: savedPaper, error: dbError } = await supabase.from('papers').insert(paperToInsert).select().single();
         if (dbError) throw dbError;
 
+        // FIX: Atomic state updates after all DB operations succeed
+        if (savedQuestions.length > 0) {
+            setQuestions(prev => [...savedQuestions, ...prev]);
+        }
         setPapers(prev => [savedPaper, ...prev]);
         showToast(t('uploadSuccess', lang));
         
     } catch (error: any) {
         if (error.name !== 'AbortError') {
-            console.error("Error handling paper upload:", error);
-            showToast(error.message || 'File upload failed.', 'error');
+            const errorMessage = error.message || 'An unknown error occurred during upload.';
+            console.error("Error handling paper upload:", errorMessage);
+
+            let userFriendlyMessage = 'File upload failed.';
+            if (errorMessage.toLowerCase().includes('timed out')) {
+                userFriendlyMessage = 'The file took too long to process and timed out. Please try a smaller file or try again later.';
+            } else if (errorMessage.toLowerCase().includes('too large')) {
+                userFriendlyMessage = errorMessage;
+            } else {
+                userFriendlyMessage = 'An error occurred while processing the file.';
+            }
+            
+            showToast(userFriendlyMessage, 'error');
         }
         throw error;
     } finally {
@@ -550,128 +599,203 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
     }
   };
 
-const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>, fileType: 'pdf' | 'csv' | 'txt' | 'image') => {
     const file = e.target.files?.[0];
-    if (!file || !session?.user) {
-        if (pdfUploadRef.current) pdfUploadRef.current.value = '';
-        return;
+    if (e.target) e.target.value = '';
+    if (!file || !session?.user) return;
+
+    setIsProcessingFile(true);
+    showToast(`${t('processingFile', lang)}: ${file.name}`);
+
+    try {
+        let extractedQuestions: Partial<Question>[] = [];
+        if (fileType === 'pdf') {
+            if (file.size > 20 * 1024 * 1024) throw new Error('PDF file is too large (max 20MB).');
+            const dataUrl = await readFileAsDataURL(file, new AbortController().signal);
+            extractedQuestions = await extractQuestionsFromPdfAI(dataUrl, 10, lang, userApiKey, userOpenApiKey);
+        } else if (fileType === 'image') {
+            if (file.size > 10 * 1024 * 1024) throw new Error('Image file is too large (max 10MB).');
+            const dataUrl = await readFileAsDataURL(file, new AbortController().signal);
+            extractedQuestions = await extractQuestionsFromImageAI(dataUrl, 10, lang, userApiKey, userOpenApiKey);
+        } else if (fileType === 'txt') {
+            if (file.size > 2 * 1024 * 1024) throw new Error('Text file is too large (max 2MB).');
+            const text = await file.text();
+            extractedQuestions = await extractQuestionsFromTextAI(text, 10, lang, userApiKey, userOpenApiKey);
+        } else if (fileType === 'csv') {
+            await handleCsvUpload(file);
+            return;
+        } else {
+            throw new Error(t('unsupportedFile', lang));
+        }
+
+        if (extractedQuestions.length === 0) {
+            throw new Error('No questions could be extracted.');
+        }
+
+        const questionsToInsert = extractedQuestions.map(q => ({
+            user_id: session.user!.id,
+            text: q.text || 'Untitled Question',
+            marks: q.marks || 1,
+            class: 10,
+            semester: Semester.First,
+            year: new Date().getFullYear(),
+            chapter: `Uploaded from ${file.name}`,
+            difficulty: Difficulty.Moderate,
+            source: QuestionSource.Upload,
+        }));
+        const { data: newQuestions, error } = await supabase.from('questions').insert(questionsToInsert).select();
+        if (error) throw error;
+        if (newQuestions) {
+            setQuestions(prev => [...newQuestions, ...prev]);
+            showToast(t('fileImportSuccess', lang).replace('{count}', String(newQuestions.length)), 'success');
+        }
+
+    } catch (error: any) {
+        showToast(`${t('fileImportFailed', lang)}: ${error.message}`, 'error');
+    } finally {
+        setIsProcessingFile(false);
     }
+};
 
-    if (file.size > 20 * 1024 * 1024) { // 20MB limit
-        showToast('PDF file is too large for AI scanning (max 20MB).', 'error');
-        if (pdfUploadRef.current) pdfUploadRef.current.value = '';
-        return;
-    }
+const handleArchiveFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, fileType: 'pdf' | 'csv' | 'txt' | 'image') => {
+    const file = e.target.files?.[0];
+    if (e.target) e.target.value = '';
+    if (!file || !session?.user) return;
 
-    setIsUploadingPdf(true);
-    showToast(t('scanningPDF', lang), 'success');
+    setIsProcessingFile(true);
+    showToast(`${t('processingFile', lang)}: ${file.name}`);
 
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-        const pdfDataUrl = event.target?.result as string;
-        try {
-            const extractedQuestions = await extractQuestionsFromPdfAI(pdfDataUrl, 10, lang, userApiKey, userOpenApiKey);
-            
-            if (extractedQuestions.length === 0) {
-                showToast(t('noQuestionsFromPDF', lang), 'error');
-                return;
+    try {
+        let savedQuestions: Question[] = [];
+
+        if (fileType === 'csv') {
+            const parsedCsvQuestions = await parseCsvToQuestions(file);
+            if(parsedCsvQuestions.length === 0) throw new Error('No valid questions found in CSV.');
+            const { data, error } = await supabase.from('questions').insert(parsedCsvQuestions).select();
+            if (error) throw error;
+            savedQuestions = data || [];
+        } else {
+            let extractedQuestions: Partial<Question>[] = [];
+            if (fileType === 'pdf') {
+                if (file.size > 20 * 1024 * 1024) throw new Error('PDF file is too large (max 20MB).');
+                const dataUrl = await readFileAsDataURL(file, new AbortController().signal);
+                extractedQuestions = await extractQuestionsFromPdfAI(dataUrl, 10, lang, userApiKey, userOpenApiKey);
+            } else if (fileType === 'image') {
+                if (file.size > 10 * 1024 * 1024) throw new Error('Image file is too large (max 10MB).');
+                const dataUrl = await readFileAsDataURL(file, new AbortController().signal);
+                extractedQuestions = await extractQuestionsFromImageAI(dataUrl, 10, lang, userApiKey, userOpenApiKey);
+            } else if (fileType === 'txt') {
+                 if (file.size > 2 * 1024 * 1024) throw new Error('Text file is too large (max 2MB).');
+                const text = await file.text();
+                extractedQuestions = await extractQuestionsFromTextAI(text, 10, lang, userApiKey, userOpenApiKey);
+            } else {
+                throw new Error(t('unsupportedFile', lang));
             }
+
+            if (extractedQuestions.length === 0) throw new Error('No questions could be extracted from the file.');
 
             const questionsToInsert = extractedQuestions.map(q => ({
                 user_id: session.user!.id,
                 text: q.text || 'Untitled Question',
-                marks: q.marks || 1,
-                class: 10, // Default class, user can edit later
-                semester: Semester.First,
-                year: new Date().getFullYear(),
-                chapter: 'Uploaded from PDF',
-                difficulty: Difficulty.Moderate,
-                source: QuestionSource.Upload,
-                used_in: [],
-                tags: [],
+                marks: q.marks || 1, class: 10, semester: Semester.First, year: new Date().getFullYear(),
+                chapter: `From ${file.name}`, difficulty: Difficulty.Moderate, source: QuestionSource.Upload,
             }));
-
-            const { data: newQuestions, error } = await supabase.from('questions').insert(questionsToInsert).select();
+            const { data, error } = await supabase.from('questions').insert(questionsToInsert).select();
             if (error) throw error;
-
-            setQuestions(prev => [...newQuestions, ...prev]);
-            showToast(t('pdfImportSuccess', lang).replace('{count}', String(newQuestions.length)), 'success');
-
-        } catch (error: any) {
-            console.error('PDF processing failed:', error);
-            showToast(`PDF processing failed: ${error.message}`, 'error');
-        } finally {
-            setIsUploadingPdf(false);
-            if (pdfUploadRef.current) pdfUploadRef.current.value = '';
+            savedQuestions = data || [];
         }
-    };
-    reader.onerror = () => {
-        setIsUploadingPdf(false);
-        showToast("Failed to read the PDF file.", 'error');
-        if (pdfUploadRef.current) pdfUploadRef.current.value = '';
-    };
-    reader.readAsDataURL(file);
+
+        if (savedQuestions.length > 0) {
+            setQuestions(prev => [...savedQuestions, ...prev]);
+            showToast(t('fileImportSuccess', lang).replace('{count}', String(savedQuestions.length)), 'success');
+
+            const paperId = `paper-${Date.now()}`;
+            let uploadedFileUrl: string | null = null;
+            if (fileType === 'pdf' || fileType === 'image') {
+                const storageFilePath = `${session.user.id}/${paperId}/${file.name}`;
+                const { error } = await supabase.storage.from('papers').upload(storageFilePath, file, { upsert: true });
+                if (error) throw error;
+                // FIX: Await the async getPublicUrl call and add a null check for robustness.
+                const { data: urlData } = await supabase.storage.from('papers').getPublicUrl(storageFilePath);
+                if (urlData?.publicUrl) {
+                    uploadedFileUrl = urlData.publicUrl;
+                }
+            }
+
+            const newPaper: Paper = {
+                id: paperId, title: file.name.split('.').slice(0, -1).join('.') || file.name, year: new Date().getFullYear(),
+                class: 10, semester: Semester.First, source: QuestionSource.Upload, created_at: new Date().toISOString(),
+                questions: savedQuestions, data_urls: uploadedFileUrl ? [uploadedFileUrl] : [], file_types: uploadedFileUrl ? [file.type] : [],
+            };
+            const { data: savedPaper, error: paperInsertError } = await supabase.from('papers').insert(newPaper).select().single();
+            if (paperInsertError) throw paperInsertError;
+            setPapers(prev => [savedPaper, ...prev]);
+        } else {
+            showToast('No valid questions found to import.', 'error');
+        }
+    } catch (error: any) {
+        showToast(`${t('fileImportFailed', lang)}: ${error.message}`, 'error');
+    } finally {
+        setIsProcessingFile(false);
+    }
 };
 
-const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !session?.user) {
-        if (csvUploadRef.current) csvUploadRef.current.value = '';
-        return;
+
+const parseCsvToQuestions = async (file: File) => {
+    if (!session?.user) return [];
+    const text = await file.text();
+    const rows = text.split('\n').map(r => r.trim()).filter(Boolean);
+    const headerRow = rows.shift();
+    if (!headerRow) throw new Error('CSV is empty or has no header.');
+    
+    const headers = headerRow.split(',').map(h => h.trim().toLowerCase().replace(/"/g, ''));
+    const requiredHeaders = ['text', 'marks', 'difficulty', 'class', 'chapter'];
+    if (!requiredHeaders.every(h => headers.includes(h))) {
+        throw new Error(`CSV must contain headers: ${requiredHeaders.join(', ')}`);
     }
-    setIsUploadingCsv(true);
+
+    return rows.map(row => {
+        const values = row.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(v => v.trim().replace(/^"|"$/g, ''));
+        const questionObj: any = {};
+        headers.forEach((header, i) => {
+            questionObj[header] = values[i] || '';
+        });
+
+        return {
+            user_id: session.user!.id,
+            text: questionObj.text,
+            answer: questionObj.answer || undefined,
+            marks: parseInt(questionObj.marks, 10) || 1,
+            difficulty: (Object.values(Difficulty).includes(questionObj.difficulty as Difficulty) ? questionObj.difficulty : Difficulty.Moderate) as Difficulty,
+            class: parseInt(questionObj.class, 10) || 10,
+            chapter: questionObj.chapter || 'Imported from CSV',
+            tags: questionObj.tags ? questionObj.tags.split(';').map((t: string) => t.trim()).filter(Boolean) : [],
+            source: QuestionSource.Upload,
+            year: new Date().getFullYear(),
+            semester: Semester.First,
+        };
+    }).filter(q => q.text);
+};
+
+
+const handleCsvUpload = async (file: File) => {
+    setIsProcessingFile(true);
     try {
-        const text = await file.text();
-        const rows = text.split('\n').map(r => r.trim()).filter(Boolean);
-        const headerRow = rows.shift();
-        if (!headerRow) throw new Error('CSV is empty or has no header.');
-
-        const headers = headerRow.split(',').map(h => h.trim().toLowerCase().replace(/"/g, ''));
-        const requiredHeaders = ['text', 'marks', 'difficulty', 'class', 'chapter'];
-        if (!requiredHeaders.every(h => headers.includes(h))) {
-            throw new Error(`CSV must contain headers: ${requiredHeaders.join(', ')}`);
-        }
-        
-        const questionsToInsert = rows.map(row => {
-            const values = row.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(v => v.trim().replace(/^"|"$/g, ''));
-            const questionObj: any = {};
-            headers.forEach((header, i) => {
-                questionObj[header] = values[i] || '';
-            });
-
-            return {
-                user_id: session.user!.id,
-                text: questionObj.text,
-                answer: questionObj.answer || undefined,
-                marks: parseInt(questionObj.marks, 10) || 1,
-                difficulty: (Object.values(Difficulty).includes(questionObj.difficulty as Difficulty) ? questionObj.difficulty : Difficulty.Moderate) as Difficulty,
-                class: parseInt(questionObj.class, 10) || 10,
-                chapter: questionObj.chapter || 'Imported',
-                tags: questionObj.tags ? questionObj.tags.split(';').map((t: string) => t.trim()).filter(Boolean) : [],
-                source: QuestionSource.Upload,
-                year: new Date().getFullYear(),
-                semester: Semester.First,
-                used_in: [],
-            };
-        }).filter(q => q.text);
-
+        const questionsToInsert = await parseCsvToQuestions(file);
         if (questionsToInsert.length === 0) {
             showToast('No valid questions found in CSV.', 'error');
             return;
         }
-
         const { data: newQuestions, error } = await supabase.from('questions').insert(questionsToInsert).select();
         if (error) throw error;
-        
-        setQuestions(prev => [...newQuestions, ...prev]);
-        showToast(t('csvImportSuccess', lang).replace('{count}', String(newQuestions.length)), 'success');
-
+        if (newQuestions) {
+            setQuestions(prev => [...newQuestions, ...prev]);
+            showToast(t('csvImportSuccess', lang).replace('{count}', String(newQuestions.length)), 'success');
+        }
     } catch (error: any) {
-        console.error("CSV Import Error:", error);
         showToast(t('csvImportFailed', lang), 'error');
     } finally {
-        setIsUploadingCsv(false);
-        if (csvUploadRef.current) csvUploadRef.current.value = '';
+        setIsProcessingFile(false);
     }
 };
 
@@ -681,7 +805,7 @@ const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'bioquest_backup.json';
+    a.download = 'eduquest_backup.json';
     a.click();
     URL.revokeObjectURL(url);
     showToast(t('dataExported', lang));
@@ -740,8 +864,11 @@ const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
 
             if (uploadError) throw uploadError;
 
+            // FIX: Add a null check for urlData to prevent runtime errors if the URL is not retrieved.
             const { data: urlData } = await supabase.storage.from('avatars').getPublicUrl(filePath);
-            newAvatarUrl = `${urlData.publicUrl}?t=${new Date().getTime()}`;
+            if (urlData?.publicUrl) {
+                newAvatarUrl = `${urlData.publicUrl}?t=${new Date().getTime()}`;
+            }
         }
         
         const { id, ...profileUpdates } = updatedProfile;
@@ -766,21 +893,89 @@ const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     }
 };
 
-  const renderContent = () => {
-    switch (activeTab) {
-      case 'bank':
-        return <QuestionBank questions={allVisibleQuestions} onAddQuestion={handleAddQuestionClick} onEditQuestion={handleEditQuestionClick} onDeleteQuestion={handleDeleteQuestion} lang={lang} showToast={showToast} />;
-      case 'generator':
-        return <PaperGenerator questions={allVisibleQuestions} onSavePaper={handleSavePaper} lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} />;
-      case 'ai_tutor':
-        return <AITutor lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} />;
-      case 'archive':
-        return <ExamArchive papers={papers} onDeletePaper={handleDeletePaper} onUploadPaper={handleUploadPaper} lang={lang} />;
-      case 'settings':
-        return <Settings showToast={showToast} onExport={handleExport} onImport={handleImport} onClear={handleClear} lang={lang} userApiKey={userApiKey} onSaveApiKey={handleSaveApiKey} onRemoveApiKey={handleRemoveApiKey} userOpenApiKey={userOpenApiKey} onSaveOpenApiKey={handleSaveOpenApiKey} onRemoveOpenApiKey={handleRemoveOpenApiKey} profile={profile!} onProfileUpdate={handleProfileUpdate} />;
-      default:
-        return null;
+  const handleSaveTutorResponse = async (queryText: string, queryImageUrl: string | null, responseText: string, tutorClass: number) => {
+    if (!session?.user) {
+        showToast("You must be logged in to save sessions.", 'error');
+        return;
     }
+    const { data, error } = await supabase
+        .from('tutor_sessions')
+        .insert({
+            user_id: session.user.id,
+            query_text: queryText,
+            query_image_url: queryImageUrl,
+            response_text: responseText,
+            tutor_class: tutorClass
+        })
+        .select()
+        .single();
+    
+    if (error || !data) {
+        console.error("Error saving tutor session:", error);
+        showToast("Failed to save tutor session.", 'error');
+    } else {
+        setTutorSessions(prev => [data, ...prev]);
+        showToast("Session saved!", 'success');
+    }
+  };
+
+  const handleDeleteTutorSession = async (sessionId: string) => {
+    if (!session?.user) {
+        showToast("You must be logged in to delete sessions.", 'error');
+        return;
+    }
+    const { error } = await supabase
+        .from('tutor_sessions')
+        .delete()
+        .eq('id', sessionId)
+        .eq('user_id', session.user.id);
+
+    if (error) {
+        console.error("Error deleting tutor session:", error);
+        showToast("Failed to delete session.", 'error');
+    } else {
+        setTutorSessions(prev => prev.filter(s => s.id !== sessionId));
+        showToast("Session deleted.", 'success');
+    }
+  };
+
+  const renderContent = () => {
+    return (
+      <>
+        <div style={{ display: activeTab === 'bank' ? 'block' : 'none' }}>
+          <QuestionBank 
+            questions={allVisibleQuestions} 
+            onAddQuestion={handleAddQuestionClick} 
+            onEditQuestion={handleEditQuestionClick} 
+            onDeleteQuestion={handleDeleteQuestion} 
+            lang={lang} 
+            showToast={showToast}
+            onFileImport={handleFileImport}
+            isProcessingFile={isProcessingFile}
+          />
+        </div>
+        <div style={{ display: activeTab === 'generator' ? 'block' : 'none' }}>
+          <PaperGenerator questions={allVisibleQuestions} onSavePaper={handleSavePaper} lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} />
+        </div>
+        <div style={{ display: activeTab === 'ai_tutor' ? 'block' : 'none' }}>
+           <AITutor lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} sessions={tutorSessions} onSaveResponse={handleSaveTutorResponse} onDeleteSession={handleDeleteTutorSession} />
+        </div>
+        <div style={{ display: activeTab === 'archive' ? 'block' : 'none' }}>
+          <ExamArchive 
+            papers={papers} 
+            onDeletePaper={handleDeletePaper} 
+            onUploadPaper={handleUploadPaper} 
+            lang={lang}
+            onFileImport={handleArchiveFileUpload}
+            isProcessingFile={isProcessingFile}
+            showToast={showToast}
+          />
+        </div>
+        <div style={{ display: activeTab === 'settings' ? 'block' : 'none' }}>
+           <Settings showToast={showToast} onExport={handleExport} onImport={handleImport} onClear={handleClear} lang={lang} userApiKey={userApiKey} onSaveApiKey={handleSaveApiKey} onRemoveApiKey={handleRemoveApiKey} userOpenApiKey={userOpenApiKey} onSaveOpenApiKey={handleSaveOpenApiKey} onRemoveOpenApiKey={handleRemoveOpenApiKey} profile={profile!} onProfileUpdate={handleProfileUpdate} />
+        </div>
+      </>
+    );
   };
 
   return (
@@ -803,32 +998,6 @@ const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
                 <option value="bn">বাংলা</option>
                 <option value="hi">हिन्दी</option>
               </select>
-              {activeTab === 'bank' && (
-                <div className="hidden sm:flex items-center space-x-2">
-                    <input type="file" ref={pdfUploadRef} onChange={handlePdfUpload} accept="application/pdf" className="hidden" />
-                    <input type="file" ref={csvUploadRef} onChange={handleCsvUpload} accept=".csv" className="hidden" />
-                    <button
-                      onClick={() => csvUploadRef.current?.click()}
-                      disabled={isUploadingCsv}
-                      className="px-4 py-2 bg-green-600 text-white rounded-lg font-semibold shadow-sm hover:shadow-md hover:-translate-y-px transition-all disabled:bg-green-300"
-                    >
-                      {isUploadingCsv ? t('generating', lang) : t('uploadCSV', lang)}
-                    </button>
-                    <button
-                      onClick={() => pdfUploadRef.current?.click()}
-                      disabled={isUploadingPdf}
-                      className="px-4 py-2 bg-purple-600 text-white rounded-lg font-semibold shadow-sm hover:shadow-md hover:-translate-y-px transition-all disabled:bg-purple-300"
-                    >
-                      {isUploadingPdf ? t('generating', lang) : t('uploadPDF', lang)}
-                    </button>
-                    <button
-                      onClick={handleAddQuestionClick}
-                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-semibold shadow-sm hover:shadow-md hover:-translate-y-px transition-all"
-                    >
-                      {t('addQuestion', lang)}
-                    </button>
-                </div>
-              )}
             </div>
           </div>
           <nav className="relative pb-2 pt-1">
@@ -865,47 +1034,6 @@ const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         </Suspense>
       </main>
       
-      {activeTab === 'bank' && (
-        <div className="fixed bottom-24 right-4 sm:hidden flex flex-col items-end gap-3 z-30">
-          <div className="flex items-center gap-2">
-              <span className="bg-slate-800/70 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full">{t('uploadCSV', lang)}</span>
-              <button
-                onClick={() => csvUploadRef.current?.click()}
-                disabled={isUploadingCsv}
-                className="bg-green-600 text-white rounded-full p-4 shadow-lg hover:bg-green-700 transition-transform hover:scale-105 disabled:bg-green-300"
-                aria-label={t('uploadCSV', lang)}
-              >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.172-6.828a1 1 0 011.414 0L9 11.586V3a1 1 0 112 0v8.586l1.414-1.414a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
-              </button>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="bg-slate-800/70 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full">{t('uploadPDF', lang)}</span>
-              <button
-                onClick={() => pdfUploadRef.current?.click()}
-                disabled={isUploadingPdf}
-                className="bg-purple-600 text-white rounded-full p-4 shadow-lg hover:bg-purple-700 transition-transform hover:scale-105 disabled:bg-purple-300"
-                aria-label={t('uploadPDF', lang)}
-              >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 7.414V13a1 1 0 11-2 0V7.414L7.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" />
-                  </svg>
-              </button>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="bg-slate-800/70 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full">{t('addQuestion', lang)}</span>
-              <button
-                onClick={handleAddQuestionClick}
-                className="bg-indigo-600 text-white rounded-full p-4 shadow-lg hover:bg-indigo-700 transition-transform hover:scale-105"
-                aria-label={t('addQuestion', lang)}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                </svg>
-              </button>
-            </div>
-        </div>
-      )}
-
       <footer className="text-center py-4 text-sm text-slate-500 border-t border-green-200 bg-green-50/80 backdrop-blur-lg">
         <p>© {new Date().getFullYear()} {t('appTitle', lang)}. All Rights Reserved.</p>
         <p className="mt-1 text-xs text-slate-400">

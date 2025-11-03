@@ -28,6 +28,8 @@ const translations: Record<Language, Record<string, string>> = {
     'board': 'Board',
     'remove': 'Remove',
     'subject': 'Subject',
+    'exportAs': 'Export As',
+    'exportWord': 'Export as Word',
     
     // Auth
     'phone': 'Phone',
@@ -42,8 +44,8 @@ const translations: Record<Language, Record<string, string>> = {
     // Tabs
     'bank': 'Question Bank',
     'generator': 'Paper Generator',
-    'archive': 'Exam Archive',
     'ai_tutor': 'AI Tutor',
+    'archive': 'Exam Archive',
     'settings': 'Settings',
 
     // Question Fields
@@ -73,6 +75,16 @@ const translations: Record<Language, Record<string, string>> = {
     'allChapters': 'All Chapters',
     'uploadPDF': 'Upload PDF',
     'uploadCSV': 'Upload CSV',
+    'uploadWord': 'Upload Word',
+    'uploadTXT': 'Upload TXT',
+    'scanImage': 'Scan Image',
+    'addManually': 'Add Manually',
+    'importFrom': 'Import & Add',
+    'wordSupportComingSoon': 'Word document (.docx) support is coming soon!',
+    'unsupportedFile': 'Unsupported file type',
+    'processingFile': 'Processing file...',
+    'fileImportSuccess': '{count} questions successfully imported!',
+    'fileImportFailed': 'File import failed',
 
     // Paper Generator
     'generatePaper': 'Generate Paper',
@@ -119,11 +131,12 @@ const translations: Record<Language, Record<string, string>> = {
     'selectBoard': 'Select Board',
     'addQuestionType': 'Add Question Type',
     'paperDetails': 'Paper Details',
-    // FIX: Removed duplicate key 'numberOfQuestions'. The other instance with 'Number of Questions' will be used.
-    // FIX: Removed duplicate key 'marksPerQuestion'. The other instance with 'Marks Per Question' will be used.
+    'numberOfQuestions': 'Number of Questions',
+    'marksPerQuestion': 'Marks Per Question',
     'fetchingChapters': 'Fetching available chapters...',
     'selectChapterForAI': "Chapters for AI Generation",
     'addChapterPlaceholder': "Type or select a chapter to add...",
+    'aiGeneration': 'AI Generation',
 
     // Archive
     'noPapers': 'No papers in the archive.',
@@ -201,7 +214,6 @@ const translations: Record<Language, Record<string, string>> = {
     'selectChapter': 'Select a Chapter',
     'selectDifficulty': 'Select Difficulty',
     'allDifficulties': 'All Difficulties',
-    'numberOfQuestions': 'Number of Questions',
     'startPractice': 'Start Practice',
     'notEnoughQuestions': "Oops! We couldn't find enough questions for that topic. Try selecting 'All Chapters' or 'All Difficulties' for more options.",
     'getAIAnalysis': 'Get AI Performance Insights',
@@ -223,7 +235,6 @@ const translations: Record<Language, Record<string, string>> = {
     'aiMcqChallenge': 'AI MCQ Challenge',
     'aiMcqChallengeSubtitle': 'Create a focused MCQ test on any topic, generated just for you.',
     'selectSemester': 'Select Semester',
-    'marksPerQuestion': 'Marks Per Question',
     'startMcqChallenge': 'Start MCQ Challenge',
     'generatingMcqChallenge': 'Crafting your MCQ challenge with AI...',
     'selectChapterForMcq': 'Please select a chapter to generate an MCQ test.',
@@ -245,8 +256,7 @@ const translations: Record<Language, Record<string, string>> = {
     'drawAndUpload': 'Draw this diagram and upload a photo to get it graded.',
     'uploadDrawing': 'Upload Your Drawing',
     'gradingDiagram': 'AI is grading your diagram...',
-    'aiTutor': 'AI Tutor',
-    'aiTutorSubtitle': 'Stuck on a question? Ask our AI tutor for help.',
+    'aiTutorSubtitle': 'Stuck on a question? Ask our AI tutor for help. All sessions are saved.',
     'askYourDoubt': 'Ask Your Doubt',
     'typeYourQuestion': 'Type your question here...',
     'orUploadImage': 'or upload an image of the question',
@@ -261,6 +271,9 @@ const translations: Record<Language, Record<string, string>> = {
     'generateGuide': 'Generate Guide',
     'generatingGuide': 'Generating your study guide...',
     'yourStudyGuide': 'Your Study Guide',
+    'tutorHistory': 'Conversation History',
+    'newSession': 'New Session',
+    'noTutorHistory': 'No past conversations found. Ask a question to get started!',
 
     // New Teacher AI Tools
     'aiTeacherAssistant': 'AI Teacher Assistant',
@@ -323,6 +336,8 @@ const translations: Record<Language, Record<string, string>> = {
     'board': 'বোর্ড',
     'remove': 'সরান',
     'subject': 'বিষয়',
+    'exportAs': 'এক্সপোর্ট করুন',
+    'exportWord': 'Word হিসেবে এক্সপোর্ট',
     
     'phone': 'ফোন',
     'phoneNumber': '১০-সংখ্যার মোবাইল নম্বর',
@@ -362,6 +377,16 @@ const translations: Record<Language, Record<string, string>> = {
     'allChapters': 'সব অধ্যায়',
     'uploadPDF': 'পিডিএফ আপলোড',
     'uploadCSV': 'সিএসভি আপলোড',
+    'uploadWord': 'Word আপলোড',
+    'uploadTXT': 'TXT আপলোড',
+    'scanImage': 'ছবি স্ক্যান',
+    'addManually': 'প্রশ্ন যোগ করুন',
+    'importFrom': 'ইম্পোর্ট ও যোগ',
+    'wordSupportComingSoon': 'Word ডকুমেন্ট (.docx) সাপোর্ট শীঘ্রই আসছে!',
+    'unsupportedFile': 'অসমর্থিত ফাইল প্রকার',
+    'processingFile': 'ফাইল প্রসেস করা হচ্ছে...',
+    'fileImportSuccess': '{count}টি প্রশ্ন সফলভাবে আমদানি করা হয়েছে!',
+    'fileImportFailed': 'ফাইল আমদানি ব্যর্থ হয়েছে',
 
     'generatePaper': 'পেপার জেনারেট করুন',
     'paperTitle': 'পেপারের শিরোনাম',
@@ -412,6 +437,7 @@ const translations: Record<Language, Record<string, string>> = {
     'fetchingChapters': 'উপলব্ধ অধ্যায় আনা হচ্ছে...',
     'selectChapterForAI': "AI জেনারেশনের জন্য অধ্যায়",
     'addChapterPlaceholder': "একটি অধ্যায় যোগ করতে টাইপ করুন বা নির্বাচন করুন...",
+    'aiGeneration': 'AI জেনারেশন',
     
     'noPapers': 'আর্কাইভে কোনো পেপার নেই।',
     'expandAll': 'সব প্রসারিত করুন',
@@ -487,7 +513,6 @@ const translations: Record<Language, Record<string, string>> = {
     'selectChapter': 'একটি অধ্যায় নির্বাচন করুন',
     'selectDifficulty': 'কঠিনতা নির্বাচন করুন',
     'allDifficulties': 'সব কঠিনতা',
-    // FIX: Removed duplicate key 'numberOfQuestions'.
     'startPractice': 'অনুশীলন শুরু করুন',
     'notEnoughQuestions': "উফ! নির্দিষ্ট বিষয়ের জন্য পর্যাপ্ত প্রশ্ন খুঁজে পাওয়া যায়নি। আরও অনুশীলনের জন্য 'সব অধ্যায়' বা 'সব কঠিনতা' নির্বাচন করে চেষ্টা করুন।",
     'getAIAnalysis': 'AI পারফরম্যান্স ইনসাইট পান',
@@ -509,7 +534,6 @@ const translations: Record<Language, Record<string, string>> = {
     'aiMcqChallenge': 'AI MCQ চ্যালেঞ্জ',
     'aiMcqChallengeSubtitle': 'যেকোনো বিষয়ে একটি ফোকাসড MCQ পরীক্ষা তৈরি করুন, শুধুমাত্র আপনার জন্য।',
     'selectSemester': 'সেমিস্টার নির্বাচন করুন',
-    // FIX: Removed duplicate key 'marksPerQuestion'.
     'startMcqChallenge': 'MCQ চ্যালেঞ্জ শুরু করুন',
     'generatingMcqChallenge': 'AI দিয়ে আপনার MCQ চ্যালেঞ্জ তৈরি করা হচ্ছে...',
     'selectChapterForMcq': 'একটি MCQ পরীক্ষা তৈরি করতে অনুগ্রহ করে একটি অধ্যায় নির্বাচন করুন।',
@@ -532,8 +556,7 @@ const translations: Record<Language, Record<string, string>> = {
     'uploadDrawing': 'আপনার আঁকা আপলোড করুন',
     'gradingDiagram': 'AI আপনার চিত্র গ্রেড করছে...',
     'diagramGrade': 'চিত্রের গ্রেড',
-    'aiTutor': 'AI শিক্ষক',
-    'aiTutorSubtitle': 'কোনো প্রশ্নে আটকে গেছেন? সাহায্যের জন্য আমাদের AI শিক্ষককে জিজ্ঞাসা করুন।',
+    'aiTutorSubtitle': 'কোনো প্রশ্নে আটকে গেছেন? সাহায্যের জন্য আমাদের AI শিক্ষককে জিজ্ঞাসা করুন। সমস্ত সেশন সেভ করা হয়।',
     'askYourDoubt': 'আপনার সন্দেহ জিজ্ঞাসা করুন',
     'typeYourQuestion': 'আপনার প্রশ্ন এখানে টাইপ করুন...',
     'orUploadImage': 'অথবা প্রশ্নের একটি ছবি আপলোড করুন',
@@ -548,6 +571,9 @@ const translations: Record<Language, Record<string, string>> = {
     'generateGuide': 'গাইড তৈরি করুন',
     'generatingGuide': 'আপনার অধ্যয়নের গাইড তৈরি হচ্ছে...',
     'yourStudyGuide': 'আপনার অধ্যয়নের গাইড',
+    'tutorHistory': 'কথোপকথনের ইতিহাস',
+    'newSession': 'নতুন সেশন',
+    'noTutorHistory': 'কোনো পুরানো কথোপকথন পাওয়া যায়নি। শুরু করতে একটি প্রশ্ন জিজ্ঞাসা করুন!',
 
     // New Teacher AI Tools
     'aiTeacherAssistant': 'AI শিক্ষক সহকারী',
@@ -608,6 +634,8 @@ const translations: Record<Language, Record<string, string>> = {
     'board': 'बोर्ड',
     'remove': 'हटाएं',
     'subject': 'विषय',
+    'exportAs': 'इस रूप में निर्यात करें',
+    'exportWord': 'Word में निर्यात करें',
     
     'phone': 'फ़ोन',
     'phoneNumber': '१०-अंकीय मोबाइल नंबर',
@@ -647,6 +675,16 @@ const translations: Record<Language, Record<string, string>> = {
     'allChapters': 'सभी अध्याय',
     'uploadPDF': 'पीडीएफ़ अपलोड करें',
     'uploadCSV': 'सीएसवी अपलोड करें',
+    'uploadWord': 'Word अपलोड करें',
+    'uploadTXT': 'TXT अपलोड करें',
+    'scanImage': 'छवि स्कैन करें',
+    'addManually': 'मैन्युअल रूप से जोड़ें',
+    'importFrom': 'आयात करें और जोड़ें',
+    'wordSupportComingSoon': 'वर्ड दस्तावेज़ (.docx) समर्थन जल्द ही आ रहा है!',
+    'unsupportedFile': 'असमर्थित फ़ाइल प्रकार',
+    'processingFile': 'फ़ाइल संसाधित हो रही है...',
+    'fileImportSuccess': '{count} प्रश्न सफलतापूर्वक आयात किए गए!',
+    'fileImportFailed': 'फ़ाइल आयात विफल',
     
     'generatePaper': 'पेपर उत्पन्न करें',
     'paperTitle': 'पेपर का शीर्षक',
@@ -697,6 +735,7 @@ const translations: Record<Language, Record<string, string>> = {
     'fetchingChapters': 'उपलब्ध अध्याय लाए जा रहे हैं...',
     'selectChapterForAI': "एआई जनरेशन के लिए अध्याय",
     'addChapterPlaceholder': "एक अध्याय जोड़ने के लिए टाइप करें या चुनें...",
+    'aiGeneration': 'एआई जनरेशन',
 
     'noPapers': 'संग्रह में कोई पेपर नहीं है।',
     'expandAll': 'सभी को विस्तृत करें',
@@ -772,7 +811,6 @@ const translations: Record<Language, Record<string, string>> = {
     'selectChapter': 'एक अध्याय चुनें',
     'selectDifficulty': 'कठिनाई चुनें',
     'allDifficulties': 'सभी कठिनाइयाँ',
-    // FIX: Removed duplicate key 'numberOfQuestions'.
     'startPractice': 'अभ्यास शुरू करें',
     'notEnoughQuestions': "उफ़! उस विषय के लिए पर्याप्त प्रश्न नहीं मिल सके। अधिक विकल्पों के लिए 'सभी अध्याय' या 'सभी कठिनाइयाँ' चुनकर प्रयास करें।",
     'getAIAnalysis': 'एआई प्रदर्शन अंतर्दृष्टि प्राप्त करें',
@@ -794,7 +832,6 @@ const translations: Record<Language, Record<string, string>> = {
     'aiMcqChallenge': 'एआई एमसीक्यू चैलेंज',
     'aiMcqChallengeSubtitle': 'किसी भी विषय पर एक केंद्रित एमसीक्यू परीक्षण बनाएं, जो केवल आपके लिए उत्पन्न हो।',
     'selectSemester': 'सेमेस्टर चुनें',
-    // FIX: Removed duplicate key 'marksPerQuestion'.
     'startMcqChallenge': 'एमसीक्यू चैलेंज शुरू करें',
     'generatingMcqChallenge': 'एआई के साथ आपकी एमसीक्यू चुनौती तैयार की जा रही है...',
     'selectChapterForMcq': 'एमसीक्यू परीक्षण उत्पन्न करने के लिए कृपया एक अध्याय चुनें।',
@@ -817,8 +854,7 @@ const translations: Record<Language, Record<string, string>> = {
     'uploadDrawing': 'अपनी ड्राइंग अपलोड करें',
     'gradingDiagram': 'एआई आपके आरेख की ग्रेडिंग कर रहा है...',
     'diagramGrade': 'आरेख ग्रेड',
-    'aiTutor': 'एआई ट्यूटर',
-    'aiTutorSubtitle': 'किसी प्रश्न पर अटक गए? हमारे एआई ट्यूटर से मदद मांगें।',
+    'aiTutorSubtitle': 'किसी प्रश्न पर अटक गए? हमारे एआई ट्यूटर से मदद मांगें। सभी सत्र सहेजे जाते हैं।',
     'askYourDoubt': 'अपना संदेह पूछें',
     'typeYourQuestion': 'अपना प्रश्न यहां टाइप करें...',
     'orUploadImage': 'या प्रश्न की एक छवि अपलोड करें',
@@ -833,6 +869,9 @@ const translations: Record<Language, Record<string, string>> = {
     'generateGuide': 'गाइड उत्पन्न करें',
     'generatingGuide': 'आपकी अध्ययन मार्गदर्शिका तैयार हो रही है...',
     'yourStudyGuide': 'आपकी अध्ययन मार्गदर्शिका',
+    'tutorHistory': 'बातचीत का इतिहास',
+    'newSession': 'नया सत्र',
+    'noTutorHistory': 'कोई पिछली बातचीत नहीं मिली। शुरू करने के लिए एक प्रश्न पूछें!',
     
     // New Teacher AI Tools
     'aiTeacherAssistant': 'एआई शिक्षक सहायक',

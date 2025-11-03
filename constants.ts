@@ -9,8 +9,8 @@ export const SEMESTERS = ['1', '2', '3'];
 export const BOARDS = ['WBBSE', 'WBCHSE', 'CBSE', 'ICSE', 'ISC'];
 
 export const TABS: { id: Tab; name: string; icon: string }[] = [
-  { id: 'generator', name: 'Generator', icon: '🧾' },
   { id: 'ai_tutor', name: 'AI Tutor', icon: '🧑‍🏫' },
+  { id: 'generator', name: 'Generator', icon: '🧾' },
   { id: 'archive', name: 'Archive', icon: '📚' },
   { id: 'bank', name: 'Question Bank', icon: '🧠' },
   { id: 'settings', name: 'Settings', icon: '⚙️' },
@@ -20,6 +20,7 @@ export const STUDENT_TABS: { id: StudentTab; name: string; icon: string }[] = [
   { id: 'dashboard', name: 'Dashboard', icon: '🏠' },
   { id: 'results', name: 'My Results', icon: '📊' },
   { id: 'practice', name: 'Practice', icon: '✍️' },
+  { id: 'ai_tutor', name: 'AI Tutor', icon: '🧑‍🏫' },
   { id: 'settings', name: 'Settings', icon: '⚙️' },
 ];
 

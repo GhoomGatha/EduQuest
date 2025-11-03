@@ -468,3 +468,26 @@ export const suggestPracticeSetsAIOpenAI = async (
     const result = await openAIChatCompletion(openAIApiKey, prompt, true, null, signal);
     return result.suggestions || [];
 };
+
+// FIX: Add the new function to serve as a fallback for text extraction.
+export const extractQuestionsFromTextAIOpenAI = async (
+    text: string,
+    classNum: number,
+    lang: Language,
+    openAIApiKey: string,
+    signal?: AbortSignal
+): Promise<Partial<Question>[]> => {
+    const prompt = `
+        You are an expert at analyzing text from exam papers. Extract all questions from the provided text.
+        For each question, identify its text. Try to infer the marks if they are mentioned near the question.
+        The content must be in the ${languageMap[lang]} language.
+        Return the result as a valid JSON object with a single key "questions". The value should be an array of objects, where each object has a "text" field (string) and an optional "marks" field (number).
+        
+        The text to analyze is:
+        ---
+        ${text}
+        ---
+    `;
+    const result = await openAIChatCompletion(openAIApiKey, prompt, true, null, signal);
+    return result.questions || [];
+};

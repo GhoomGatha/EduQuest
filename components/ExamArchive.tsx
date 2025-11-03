@@ -28,6 +28,9 @@ interface ExamArchiveProps {
   onDeletePaper: (id: string) => void;
   onUploadPaper: (paper: Paper, files: FileList, onProgress: (progress: UploadProgress | null) => void, options: { signal: AbortSignal }) => Promise<void>;
   lang: 'en' | 'bn' | 'hi';
+  onFileImport: (e: React.ChangeEvent<HTMLInputElement>, fileType: 'pdf' | 'csv' | 'txt' | 'image') => void;
+  isProcessingFile: boolean;
+  showToast: (message: string, type?: 'success' | 'error') => void;
 }
 
 const PaperItem: React.FC<{ paper: Paper; onDelete: () => void; onView: () => void; lang: 'en' | 'bn' | 'hi' }> = ({ paper, onDelete, onView, lang }) => (
@@ -50,7 +53,28 @@ const initialUploadState = {
   semester: Semester.First,
 };
 
-const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUploadPaper, lang }) => {
+type ActionButtonType = 'pdf' | 'csv' | 'txt' | 'image' | 'word';
+
+const ActionButton: React.FC<{
+    onClick: () => void,
+    disabled: boolean,
+    isAnimating: boolean,
+    emoji: string,
+    label: string,
+    gradient: string
+}> = ({ onClick, disabled, isAnimating, emoji, label, gradient }) => (
+    <button
+        onClick={onClick}
+        disabled={disabled}
+        className={`flex flex-col items-center justify-center p-2 rounded-lg text-white shadow-md transform transition-all duration-300 hover:scale-105 hover:shadow-lg focus:outline-none focus:ring-4 focus:ring-opacity-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 w-20 h-20 ${gradient}`}
+    >
+        <span className={`text-2xl ${isAnimating ? 'animate-pulse-once' : ''}`}>{emoji}</span>
+        <span className="text-xs font-bold mt-1">{label}</span>
+    </button>
+);
+
+
+const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUploadPaper, lang, onFileImport, isProcessingFile, showToast }) => {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [isUploadModalOpen, setUploadModalOpen] = useState(false);
   const [uploadData, setUploadData] = useState(initialUploadState);
@@ -59,8 +83,42 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
+  const [animatingButton, setAnimatingButton] = useState<ActionButtonType | null>(null);
+  const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
+  const actionMenuRef = useRef<HTMLDivElement>(null);
+  
+  const pdfUploadRef = useRef<HTMLInputElement>(null);
+  const csvUploadRef = useRef<HTMLInputElement>(null);
+  const txtUploadRef = useRef<HTMLInputElement>(null);
+  const imageUploadRef = useRef<HTMLInputElement>(null);
 
   type PaperGroup = { year: number; classNum: number; semester: Semester; papers: Paper[] };
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+        if (actionMenuRef.current && !actionMenuRef.current.contains(event.target as Node)) {
+            setIsActionMenuOpen(false);
+        }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const triggerAnimation = (type: ActionButtonType) => {
+    setAnimatingButton(type);
+    setTimeout(() => setAnimatingButton(null), 500); // Animation duration
+  };
+
+  const handleActionClick = (type: ActionButtonType) => {
+    triggerAnimation(type);
+    switch (type) {
+        case 'pdf': pdfUploadRef.current?.click(); break;
+        case 'csv': csvUploadRef.current?.click(); break;
+        case 'txt': txtUploadRef.current?.click(); break;
+        case 'image': imageUploadRef.current?.click(); break;
+        case 'word': showToast(t('wordSupportComingSoon', lang), 'success'); break;
+    }
+  };
 
   const groupedPapers = useMemo(() => {
     return papers.reduce((acc, paper) => {
@@ -132,9 +190,9 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
             uploadOk = true; // Cancellation is an "ok" outcome for UI flow
             console.log('Upload cancelled by user.');
         } else {
-          console.error("Upload failed in component:", error);
-          // Error toast is shown by the parent `onUploadPaper` function.
-          // We leave `uploadOk = false` so the modal stays open for the user to see the error state.
+          // The parent component (TeacherApp) now handles user-facing toasts.
+          // This log helps debug that an error was caught here before being re-thrown.
+          console.error("Upload failed in component:", error.message);
         }
     } finally {
       setIsUploading(false);
@@ -528,15 +586,65 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
     );
   };
 
+  const actionButtons: { type: ActionButtonType, emoji: string, label: string, gradient: string }[] = [
+    { type: 'pdf', emoji: '📄', label: t('uploadPDF', lang), gradient: 'bg-gradient-to-br from-red-500 to-orange-500 focus:ring-orange-300' },
+    { type: 'csv', emoji: '📊', label: t('uploadCSV', lang), gradient: 'bg-gradient-to-br from-green-500 to-emerald-500 focus:ring-emerald-300' },
+    { type: 'txt', emoji: '📝', label: t('uploadTXT', lang), gradient: 'bg-gradient-to-br from-blue-500 to-cyan-500 focus:ring-cyan-300' },
+    { type: 'image', emoji: '📷', label: t('scanImage', lang), gradient: 'bg-gradient-to-br from-purple-500 to-pink-500 focus:ring-pink-300' },
+    { type: 'word', emoji: '📖', label: t('uploadWord', lang), gradient: 'bg-gradient-to-br from-sky-500 to-blue-600 focus:ring-sky-300' },
+  ];
+  
 
   return (
     <div className="p-2 sm:p-4 space-y-4">
+       <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+        <div className="flex justify-between items-center" ref={actionMenuRef}>
+            <div>
+                <h3 className="font-bold text-lg text-slate-800">{t('importFrom', lang)}</h3>
+                <p className="text-xs text-slate-500">
+                    Upload files to extract questions and create a new paper.
+                </p>
+            </div>
+
+            <div className="relative">
+                <button
+                    onClick={() => setIsActionMenuOpen(prev => !prev)}
+                    disabled={isProcessingFile}
+                    className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white font-semibold rounded-lg shadow-sm hover:bg-indigo-700 transition-all disabled:opacity-60"
+                >
+                    <span className="text-lg">➕</span>
+                    <span>Actions</span>
+                     <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 transition-transform ${isActionMenuOpen ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                    </svg>
+                </button>
+                {isActionMenuOpen && (
+                    <div className="absolute top-full right-0 mt-2 bg-white rounded-xl shadow-lg border border-slate-200 z-20 p-2">
+                        <div className="grid grid-cols-3 gap-2">
+                            {actionButtons.map(btn => (
+                                <ActionButton
+                                    key={btn.type}
+                                    onClick={() => { handleActionClick(btn.type); setIsActionMenuOpen(false); }}
+                                    disabled={isProcessingFile}
+                                    isAnimating={animatingButton === btn.type}
+                                    emoji={btn.emoji}
+                                    label={btn.label}
+                                    gradient={btn.gradient}
+                                />
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+      </div>
+
       <div className="flex justify-between items-center">
         <div className="space-x-2">
             <button onClick={expandAll} className="px-3 py-1.5 text-sm bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors font-medium">{t('expandAll', lang)}</button>
             <button onClick={collapseAll} className="px-3 py-1.5 text-sm bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors font-medium">{t('collapseAll', lang)}</button>
         </div>
-        <button onClick={openUploadModal} className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-semibold shadow-sm hover:shadow-md hover:-translate-y-px transition-all">Upload Paper</button>
+        <button onClick={openUploadModal} disabled={isProcessingFile} className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-semibold shadow-sm hover:shadow-md hover:-translate-y-px transition-all disabled:opacity-60 disabled:cursor-not-allowed">Upload Paper</button>
       </div>
 
       {sortedGroups.length === 0 ? (
@@ -638,6 +746,11 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
       <Modal isOpen={!!viewingPaper} onClose={() => setViewingPaper(null)} title={viewingPaper?.title || ""}>
         {renderViewingPaperContent()}
       </Modal>
+      
+      <input type="file" ref={pdfUploadRef} onChange={(e) => onFileImport(e, 'pdf')} className="hidden" accept="application/pdf" />
+      <input type="file" ref={csvUploadRef} onChange={(e) => onFileImport(e, 'csv')} className="hidden" accept=".csv" />
+      <input type="file" ref={txtUploadRef} onChange={(e) => onFileImport(e, 'txt')} className="hidden" accept="text/plain" />
+      <input type="file" ref={imageUploadRef} onChange={(e) => onFileImport(e, 'image')} className="hidden" accept="image/*" />
     </div>
   );
 };

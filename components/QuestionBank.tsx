@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Question, Difficulty } from '../types';
 import { t } from '../utils/localization';
 import { CLASSES, MARKS } from '../constants';
@@ -10,6 +10,8 @@ interface QuestionBankProps {
   onDeleteQuestion: (id: string) => void;
   lang: 'en' | 'bn' | 'hi';
   showToast: (message: string, type?: 'success' | 'error') => void;
+  onFileImport: (e: React.ChangeEvent<HTMLInputElement>, fileType: 'pdf' | 'csv' | 'txt' | 'image') => void;
+  isProcessingFile: boolean;
 }
 
 const QuestionCard: React.FC<{ question: Question; onEdit: () => void; onDelete: () => void; onCopy: () => void; lang: 'en' | 'bn' | 'hi' }> = ({ question, onEdit, onDelete, onCopy, lang }) => (
@@ -41,7 +43,28 @@ const QuestionCard: React.FC<{ question: Question; onEdit: () => void; onDelete:
     </div>
 );
 
-const QuestionBank: React.FC<QuestionBankProps> = ({ questions, onEditQuestion, onDeleteQuestion, lang, showToast }) => {
+type ActionButtonType = 'pdf' | 'csv' | 'txt' | 'image' | 'word' | 'manual';
+
+const ActionButton: React.FC<{
+    onClick: () => void,
+    disabled: boolean,
+    isAnimating: boolean,
+    emoji: string,
+    label: string,
+    gradient: string
+}> = ({ onClick, disabled, isAnimating, emoji, label, gradient }) => (
+    <button
+        onClick={onClick}
+        disabled={disabled}
+        className={`flex flex-col items-center justify-center p-2 rounded-lg text-white shadow-md transform transition-all duration-300 hover:scale-105 hover:shadow-lg focus:outline-none focus:ring-4 focus:ring-opacity-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 w-20 h-20 ${gradient}`}
+    >
+        <span className={`text-2xl ${isAnimating ? 'animate-pulse-once' : ''}`}>{emoji}</span>
+        <span className="text-xs font-bold mt-1">{label}</span>
+    </button>
+);
+
+
+const QuestionBank: React.FC<QuestionBankProps> = ({ questions, onAddQuestion, onEditQuestion, onDeleteQuestion, lang, showToast, onFileImport, isProcessingFile }) => {
   const [inputValue, setInputValue] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [filterClass, setFilterClass] = useState<number | ''>('');
@@ -49,6 +72,43 @@ const QuestionBank: React.FC<QuestionBankProps> = ({ questions, onEditQuestion, 
   const [filterDifficulty, setFilterDifficulty] = useState<Difficulty | ''>('');
   const [filterChapter, setFilterChapter] = useState<string>('');
   const [filterTag, setFilterTag] = useState<string>('');
+  const [animatingButton, setAnimatingButton] = useState<ActionButtonType | null>(null);
+  const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
+  const actionMenuRef = useRef<HTMLDivElement>(null);
+
+  
+  const pdfUploadRef = useRef<HTMLInputElement>(null);
+  const csvUploadRef = useRef<HTMLInputElement>(null);
+  const txtUploadRef = useRef<HTMLInputElement>(null);
+  const imageUploadRef = useRef<HTMLInputElement>(null);
+  
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+        if (actionMenuRef.current && !actionMenuRef.current.contains(event.target as Node)) {
+            setIsActionMenuOpen(false);
+        }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const triggerAnimation = (type: ActionButtonType) => {
+    setAnimatingButton(type);
+    setTimeout(() => setAnimatingButton(null), 500); // Animation duration
+  };
+
+  const handleActionClick = (type: ActionButtonType) => {
+    triggerAnimation(type);
+    switch (type) {
+        case 'manual': onAddQuestion(); break;
+        case 'pdf': pdfUploadRef.current?.click(); break;
+        case 'csv': csvUploadRef.current?.click(); break;
+        case 'txt': txtUploadRef.current?.click(); break;
+        case 'image': imageUploadRef.current?.click(); break;
+        case 'word': showToast(t('wordSupportComingSoon', lang), 'success'); break;
+    }
+  };
+
 
   useEffect(() => {
     const debounceTimer = setTimeout(() => {
@@ -87,14 +147,59 @@ const QuestionBank: React.FC<QuestionBankProps> = ({ questions, onEditQuestion, 
   }, [questions, searchTerm, filterClass, filterMarks, filterDifficulty, filterChapter, filterTag]);
 
   const inputStyles = "w-full p-2.5 border border-slate-300 bg-white rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition";
+  
+  const actionButtons: { type: ActionButtonType, emoji: string, label: string, gradient: string }[] = [
+    { type: 'manual', emoji: '✍️', label: t('addManually', lang), gradient: 'bg-gradient-to-br from-indigo-500 to-purple-600 focus:ring-purple-300' },
+    { type: 'pdf', emoji: '📄', label: t('uploadPDF', lang), gradient: 'bg-gradient-to-br from-red-500 to-orange-500 focus:ring-orange-300' },
+    { type: 'csv', emoji: '📊', label: t('uploadCSV', lang), gradient: 'bg-gradient-to-br from-green-500 to-emerald-500 focus:ring-emerald-300' },
+    { type: 'txt', emoji: '📝', label: t('uploadTXT', lang), gradient: 'bg-gradient-to-br from-blue-500 to-cyan-500 focus:ring-cyan-300' },
+    { type: 'image', emoji: '📷', label: t('scanImage', lang), gradient: 'bg-gradient-to-br from-purple-500 to-pink-500 focus:ring-pink-300' },
+    { type: 'word', emoji: '📖', label: t('uploadWord', lang), gradient: 'bg-gradient-to-br from-sky-500 to-blue-600 focus:ring-sky-300' },
+  ];
 
   return (
     <div className="p-2 sm:p-4 space-y-4">
+      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+        <div className="flex justify-between items-center" ref={actionMenuRef}>
+            <h3 className="font-bold text-lg text-slate-800">{t('importFrom', lang)}</h3>
+            <div className="relative">
+                <button
+                    onClick={() => setIsActionMenuOpen(prev => !prev)}
+                    disabled={isProcessingFile}
+                    className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white font-semibold rounded-lg shadow-sm hover:bg-indigo-700 transition-all disabled:opacity-60"
+                >
+                    <span className="text-lg">➕</span>
+                    <span>Actions</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 transition-transform ${isActionMenuOpen ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                    </svg>
+                </button>
+                {isActionMenuOpen && (
+                    <div className="absolute top-full right-0 mt-2 bg-white rounded-xl shadow-lg border border-slate-200 z-20 p-2">
+                        <div className="grid grid-cols-3 gap-2">
+                            {actionButtons.map(btn => (
+                                <ActionButton
+                                    key={btn.type}
+                                    onClick={() => { handleActionClick(btn.type); setIsActionMenuOpen(false); }}
+                                    disabled={isProcessingFile}
+                                    isAnimating={animatingButton === btn.type}
+                                    emoji={btn.emoji}
+                                    label={btn.label}
+                                    gradient={btn.gradient}
+                                />
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+      </div>
+    
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <input
           type="text"
           placeholder={t('search', lang)}
-          className="lg:col-span-2 "
+          className={`${inputStyles} lg:col-span-2`}
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
         />
@@ -180,6 +285,11 @@ const QuestionBank: React.FC<QuestionBankProps> = ({ questions, onEditQuestion, 
           <p>{t('noQuestions', lang)}</p>
         </div>
       )}
+      
+      <input type="file" ref={pdfUploadRef} onChange={(e) => onFileImport(e, 'pdf')} className="hidden" accept="application/pdf" />
+      <input type="file" ref={csvUploadRef} onChange={(e) => onFileImport(e, 'csv')} className="hidden" accept=".csv" />
+      <input type="file" ref={txtUploadRef} onChange={(e) => onFileImport(e, 'txt')} className="hidden" accept="text/plain" />
+      <input type="file" ref={imageUploadRef} onChange={(e) => onFileImport(e, 'image')} className="hidden" accept="image/*" />
     </div>
   );
 };

@@ -26,71 +26,48 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let isMounted = true;
+    // 1. Get the initial session to resolve the loading state quickly.
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setLoading(false); // Initial check is done, stop loading.
+    });
 
-    // Helper to fetch and set the user profile
-    const fetchUserProfile = async (user: User | null) => {
-      if (!user) {
-        if (isMounted) setProfile(null);
-        return;
-      }
-      try {
-        const { data: profileData, error: profileError } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', user.id)
-          .single();
-        if (profileError && profileError.code !== 'PGRST116') { // PGRST116: no rows found
-          throw profileError;
-        }
-        if (isMounted) setProfile(profileData || null);
-      } catch (error) {
-        console.error("Error fetching profile:", error);
-        if (isMounted) setProfile(null); // Clear profile on error
-      }
-    };
-
-    // Handle the initial session check on app load
-    const initializeAuth = async () => {
-      try {
-        const { data: { session: currentSession }, error } = await supabase.auth.getSession();
-        if (error) throw error;
-        if (isMounted) setSession(currentSession);
-        // Fetch profile before setting loading to false
-        await fetchUserProfile(currentSession?.user ?? null);
-      } catch (error) {
-        console.error("Auth initialization error:", error);
-        // Ensure state is clean on error
-        if (isMounted) {
-            setSession(null);
-            setProfile(null);
-        }
-      } finally {
-        if (isMounted) setLoading(false);
-      }
-    };
-    
-    initializeAuth();
-
-    // Set up a listener for auth state changes (login/logout)
+    // 2. Listen for subsequent auth changes.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, newSession) => {
-        // When auth state changes, enter loading state
-        if (isMounted) setLoading(true);
-        if (isMounted) setSession(newSession);
-        // Fetch the new user's profile
-        await fetchUserProfile(newSession?.user ?? null);
-        // Exit loading state once everything is updated
-        if (isMounted) setLoading(false);
+      (_event, session) => {
+        setSession(session);
       }
     );
 
-    // Cleanup subscription on unmount
     return () => {
-      isMounted = false;
       subscription?.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    // 3. Fetch the user profile whenever the session changes.
+    if (session?.user) {
+      setLoading(true);
+      supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', session.user.id)
+        .single()
+        .then(({ data, error }) => {
+          if (error && error.code !== 'PGRST116') {
+            console.error("Error fetching profile:", error);
+          }
+          setProfile(data || null);
+          setLoading(false);
+        }).catch(err => {
+            console.error("Profile fetch promise rejected:", err);
+            setProfile(null);
+            setLoading(false);
+        });
+    } else {
+      setProfile(null);
+    }
+  }, [session]);
 
   const value = useMemo(() => ({
     session,

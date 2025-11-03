@@ -56,6 +56,40 @@ interface PaperGeneratorProps {
     userOpenApiKey?: string;
 }
 
+const AnimatedHeader = ({ emoji, animation, title }: { emoji: string; animation: string; title: string; }) => {
+    const ref = useRef<HTMLHeadingElement>(null);
+    const [isIntersecting, setIntersecting] = useState(false);
+
+    useEffect(() => {
+        const observer = new IntersectionObserver(
+            ([entry]) => {
+                setIntersecting(entry.isIntersecting);
+            },
+            {
+                rootMargin: '-50% 0px -50% 0px', // Trigger when the element is in the vertical center of the viewport
+                threshold: 0
+            }
+        );
+
+        if (ref.current) {
+            observer.observe(ref.current);
+        }
+
+        return () => {
+            if (ref.current) {
+                observer.unobserve(ref.current);
+            }
+        };
+    }, []);
+
+    return (
+        <h3 ref={ref} className="text-lg font-bold text-slate-700">
+            <span className={`inline-block mr-2 text-2xl ${isIntersecting ? animation : ''}`}>{emoji}</span>
+            {title}
+        </h3>
+    );
+};
+
 const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper, lang, showToast, userApiKey, userOpenApiKey }) => {
     const [title, setTitle] = useState('');
     const [year, setYear] = useState(new Date().getFullYear());
@@ -111,6 +145,26 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
     useEffect(() => {
         localStorage.setItem(WBBSE_SYLLABUS_KEY, JSON.stringify(settings.wbbseSyllabusOnly));
     }, [settings.wbbseSyllabusOnly]);
+
+    const availableClasses = useMemo(() => {
+        switch (board) {
+            case 'WBBSE':
+            case 'ICSE':
+                return CLASSES.filter(c => c <= 10);
+            case 'WBCHSE':
+            case 'ISC':
+                return CLASSES.filter(c => c > 10);
+            case 'CBSE':
+            default:
+                return CLASSES;
+        }
+    }, [board]);
+
+    useEffect(() => {
+        if (!availableClasses.includes(selectedClass)) {
+            setClass(availableClasses[0]);
+        }
+    }, [availableClasses, selectedClass]);
 
     const stableShowToast = useCallback(showToast, []);
 
@@ -835,7 +889,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                 
                 {/* Paper Details Section */}
                 <div className="border-t border-slate-200 pt-5 space-y-4">
-                    <h3 className="text-lg font-bold text-slate-700 mb-2">{t('paperDetails', lang)}</h3>
+                    <AnimatedHeader emoji="📋" animation="animate-tilt" title={t('paperDetails', lang)} />
                     <div className="flex flex-wrap items-end gap-4">
                         <div className="flex-grow min-w-[200px] sm:min-w-[250px]">
                             <label htmlFor="title" className={labelStyles}>{t('paperTitle', lang)}</label>
@@ -850,7 +904,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                          <div className="flex-1 min-w-[80px]">
                             <label htmlFor="class" className={labelStyles}>{t('class', lang)}</label>
                             <select id="class" value={selectedClass} onChange={e => setClass(parseInt(e.target.value))} className={inputStyles}>
-                                {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+                                {availableClasses.map(c => <option key={c} value={c}>{c}</option>)}
                             </select>
                         </div>
                         <div className="flex-1 min-w-[120px]">
@@ -884,7 +938,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                 {/* New Mark Distribution */}
                 <div className="border-t border-slate-200 pt-5">
                     <div className="flex items-center justify-between mb-2">
-                        <h3 className="text-lg font-bold text-slate-700">{t('markDistribution', lang)}</h3>
+                        <AnimatedHeader emoji="📊" animation="animate-pulse" title={t('markDistribution', lang)} />
                          <p className="text-sm font-bold text-slate-700">{t('totalMarks', lang)}: <span className="text-indigo-600">{calculatedTotal}</span></p>
                     </div>
                      <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
@@ -931,7 +985,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                  {/* AI Settings */}
                 <div className="border-t border-slate-200 pt-5 space-y-4">
                     <div className="flex justify-between items-center">
-                        <h3 className="text-lg font-bold text-slate-700">AI Generation</h3>
+                        <AnimatedHeader emoji="✨" animation="animate-sparkle" title={t('aiGeneration', lang)} />
                         <div className="flex items-center space-x-2">
                              <button onClick={handleClearAISettings} className="text-xs font-semibold text-slate-500 hover:text-red-600 transition-colors">{t('clearAISettings', lang)}</button>
                             <div className="flex items-center space-x-2">

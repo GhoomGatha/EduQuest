@@ -1,4 +1,3 @@
-
 import React, { useRef, useState, useEffect } from 'react';
 import { StudentTab } from '../../types';
 import { STUDENT_TABS } from '../../constants';
@@ -14,6 +13,7 @@ const tabIconAnimations: Record<StudentTab, string> = {
   dashboard: 'animate-glow',
   results: 'animate-sway',
   practice: 'animate-bobbing',
+  ai_tutor: 'animate-glow',
   settings: 'animate-slow-spin',
 };
 

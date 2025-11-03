@@ -14,6 +14,8 @@ import {
     suggestPracticeSetsAIOpenAI,
     extractQuestionsFromPdfAIOpenAI,
     answerTeacherDoubtAIOpenAI,
+    // FIX: Import the new text extraction fallback function.
+    extractQuestionsFromTextAIOpenAI,
 } from './openaiService';
 import { supabase } from './supabaseClient';
 
@@ -657,7 +659,7 @@ export const extractQuestionsFromPdfAI = async (
                 }
             };
 
-            const PDF_EXTRACTION_TIMEOUT = 180000; // 3 minutes, as PDF processing can be slow.
+            const PDF_EXTRACTION_TIMEOUT = 300000; // 5 minutes, as PDF processing can be slow.
 
             const response = await withTimeout(
                 generateWithRetry(
@@ -703,6 +705,64 @@ export const extractQuestionsFromPdfAI = async (
     }
     
     throw lastError || new Error("PDF Question Extraction failed with all available Gemini keys. The file might be too complex, corrupted, or the service may be temporarily unavailable. Please try again later.");
+};
+
+// FIX: Add the missing extractQuestionsFromTextAI function.
+export const extractQuestionsFromTextAI = (
+    text: string,
+    classNum: number,
+    lang: Language,
+    userApiKey?: string,
+    userOpenApiKey?: string,
+    signal?: AbortSignal
+): Promise<Partial<Question>[]> => {
+    const providers = createProviderList(userApiKey, userOpenApiKey);
+    return executeWithFallbacks(
+        providers,
+        async (ai, sig) => {
+            const prompt = `You are an expert at analyzing text. Extract all distinct questions from the provided text from an exam paper. The paper is for Class ${classNum} and is in the ${languageMap[lang]} language.
+- For each question, identify its full text.
+- If marks are mentioned near a question, extract them.
+- Return the result as a valid JSON array of objects. Each object must have a "text" (string) and may have an optional "marks" (number) field.
+
+Here is the text to analyze:
+---
+${text}
+---
+`;
+
+            const responseSchema = {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        text: { type: Type.STRING },
+                        marks: { type: Type.NUMBER }
+                    },
+                    required: ["text"]
+                }
+            };
+            
+            const response = await generateWithRetry(ai, { 
+                model: 'gemini-2.5-flash', 
+                contents: prompt,
+                config: { responseMimeType: "application/json", responseSchema } 
+            }, 5, sig);
+            
+            const jsonText = response.text.trim();
+            const parsedResult = JSON.parse(jsonText);
+
+            if (!Array.isArray(parsedResult)) {
+                console.warn("AI returned a non-array response for text extraction:", parsedResult);
+                throw new Error("AI response was not in the expected array format.");
+            }
+
+            return parsedResult;
+        },
+        (apiKey, sig) => extractQuestionsFromTextAIOpenAI(text, classNum, lang, apiKey, sig),
+        "Text Question Extraction",
+        signal
+    );
 };
 
 export const suggestDiagramsAI = (chapter: string, classNum: number, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<DiagramSuggestion[]> => {

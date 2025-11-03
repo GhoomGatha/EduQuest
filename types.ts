@@ -88,7 +88,7 @@ export interface ToastMessage {
 }
 
 // Student-specific types
-export type StudentTab = 'dashboard' | 'results' | 'practice' | 'settings';
+export type StudentTab = 'dashboard' | 'results' | 'practice' | 'ai_tutor' | 'settings';
 
 export interface StudentAnswer {
   questionId: string;
@@ -145,4 +145,23 @@ export interface UploadProgress {
   completed: number;
   pending: number;
   currentFile: string;
+}
+
+export interface StudyMaterial {
+  id: string;
+  user_id: string;
+  created_at: string;
+  type: 'study_guide' | 'flashcards';
+  title: string;
+  content: any; // jsonb can be string for guide, or Flashcard[] for flashcards
+}
+
+export interface TutorSession {
+  id: string;
+  user_id: string;
+  created_at: string;
+  query_text?: string;
+  query_image_url?: string;
+  response_text: string;
+  tutor_class: number;
 }

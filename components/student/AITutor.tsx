@@ -1,10 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Language, TutorSession } from '../types';
-import { t } from '../utils/localization';
-import { answerTeacherDoubtAI } from '../services/geminiService';
-import { loadScript } from '../utils/scriptLoader';
-import { getBengaliFontBase64, getDevanagariFontBase64 } from '../utils/fontData';
-import Modal from './Modal';
+import { Language, TutorSession } from '../../types';
+import { t } from '../../utils/localization';
+import { answerDoubtAI } from '../../services/geminiService';
+import { loadScript } from '../../utils/scriptLoader';
+import { getBengaliFontBase64, getDevanagariFontBase64 } from '../../utils/fontData';
+import Modal from '../Modal';
 
 // --- Start of Embedded MarkdownRenderer Component ---
 declare global {
@@ -28,6 +28,7 @@ const MarkdownRenderer: React.FC<{ content: string }> = ({ content }) => {
     return <div ref={containerRef} className="prose prose-sm max-w-none prose-slate"></div>;
 };
 // --- End of Embedded MarkdownRenderer Component ---
+
 
 interface AITutorProps {
     lang: Language;
@@ -78,18 +79,18 @@ const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpen
     const [image, setImage] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [viewingSession, setViewingSession] = useState<TutorSession | null>(null);
-    
+
     const inputStyles = "w-full p-2.5 border border-slate-300 bg-white rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition";
     const labelStyles = "block text-sm font-semibold text-slate-600 mb-1";
-    
+
     const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (file) {
             const reader = new FileReader();
             reader.onloadend = () => {
                 setImage(reader.result as string);
-                if(e.target) e.target.value = ''; // Allow re-uploading the same file
-            }
+                if (e.target) e.target.value = '';
+            };
             reader.readAsDataURL(file);
         }
     };
@@ -98,14 +99,14 @@ const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpen
         if (!query && !image) return;
         setIsLoading(true);
         try {
-            const tutorClass = 10; // Default class for teacher tutor
-            const aiResponse = await answerTeacherDoubtAI(tutorClass, lang, query, image || undefined, userApiKey, userOpenApiKey);
+            const tutorClass = 10; // Default class, no longer selectable by user
+            const aiResponse = await answerDoubtAI(tutorClass, lang, query, image || undefined, userApiKey, userOpenApiKey);
             if (aiResponse) {
                 onSaveResponse(query, image, aiResponse, tutorClass);
                 setQuery('');
                 setImage(null);
             } else {
-                 showToast("AI returned an empty response.", "error");
+                showToast("AI returned an empty response.", "error");
             }
         } catch(e) {
             showToast("AI Tutor is currently unavailable.", "error");
@@ -119,7 +120,7 @@ const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpen
             onDeleteSession(sessionId);
         }
     };
-
+    
     const handleExport = async (format: 'pdf' | 'txt' | 'xlsx' | 'word') => {
         if (!viewingSession) return;
         const { query_text, response_text, created_at } = viewingSession;
@@ -202,12 +203,10 @@ const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpen
         }
     };
 
-
     return (
         <div className="p-4 sm:p-6 space-y-6">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                 <AnimatedHeader emoji="✨" animation="animate-sparkle" title={t('newSession', lang)} />
-                <p className="text-sm text-slate-500 -mt-4 mb-4">{t('tutorForTeachersSubtitle', lang)}</p>
+                <AnimatedHeader emoji="✨" animation="animate-sparkle" title={t('newSession', lang)} />
                 <div className="space-y-4">
                     <div>
                         <label className={labelStyles}>{t('yourQuery', lang)}</label>

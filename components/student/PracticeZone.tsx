@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Question, Difficulty, Language, Flashcard, QuestionSource, Semester, DiagramSuggestion, DiagramGrade } from '../../types';
 import { t } from '../../utils/localization';
 import { generateFlashcardsAI, generateQuestionsAI, getChaptersAI, getSubjectsAI, extractQuestionsFromImageAI, suggestDiagramsAI, gradeDiagramAI, answerDoubtAI, generateStudyGuideAI } from '../../services/geminiService';
@@ -7,6 +7,8 @@ import LoadingSpinner from '../LoadingSpinner';
 import CameraModal from '../CameraModal';
 import { BOARDS, CLASSES } from '../../constants';
 import DrawingModal from './DrawingModal';
+import { useAuth } from '../../hooks/useAuth';
+import { supabase } from '../../services/supabaseClient';
 
 // --- Start of Embedded MarkdownRenderer Component ---
 declare global {
@@ -86,7 +88,44 @@ interface PracticeZoneProps {
     userOpenApiKey?: string;
 }
 
+const CURRICULUM_PREFS_KEY = 'eduquest_student_curriculum_prefs';
+
+const AnimatedHeader = ({ emoji, animation, title }: { emoji: string; animation: string; title: string; }) => {
+    const ref = useRef<HTMLHeadingElement>(null);
+    const [isIntersecting, setIntersecting] = useState(false);
+
+    useEffect(() => {
+        const observer = new IntersectionObserver(
+            ([entry]) => {
+                setIntersecting(entry.isIntersecting);
+            },
+            {
+                rootMargin: '-50% 0px -50% 0px', // Trigger when the element is in the vertical center of the viewport
+                threshold: 0
+            }
+        );
+
+        if (ref.current) {
+            observer.observe(ref.current);
+        }
+
+        return () => {
+            if (ref.current) {
+                observer.unobserve(ref.current);
+            }
+        };
+    }, []);
+
+    return (
+        <h2 ref={ref} className="text-xl font-bold font-serif-display text-slate-700">
+            <span className={`inline-block mr-2 text-2xl ${isIntersecting ? animation : ''}`}>{emoji}</span>
+            {title}
+        </h2>
+    );
+};
+
 const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStartPractice, showToast, userApiKey, userOpenApiKey }) => {
+    const { session } = useAuth();
     // Common state
     const [board, setBoard] = useState<string>('WBBSE');
     const [studentClass, setStudentClass] = useState<number>(10);
@@ -135,13 +174,48 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
     const [isGradeModalOpen, setGradeModalOpen] = useState(false);
     const [isDrawingModalOpen, setIsDrawingModalOpen] = useState(false);
 
-    // AI Tutor
-    const [isTutorModalOpen, setIsTutorModalOpen] = useState(false);
-    const [doubtText, setDoubtText] = useState('');
-    const [doubtImage, setDoubtImage] = useState<string | null>(null);
-    const [tutorResponse, setTutorResponse] = useState('');
-    const [isTutorLoading, setIsTutorLoading] = useState(false);
+    useEffect(() => {
+        try {
+            const savedPrefsRaw = localStorage.getItem(CURRICULUM_PREFS_KEY);
+            if (savedPrefsRaw) {
+                const savedPrefs = JSON.parse(savedPrefsRaw);
+                if (savedPrefs.board) setBoard(savedPrefs.board);
+                if (savedPrefs.studentClass) setStudentClass(savedPrefs.studentClass);
+                // We don't set selectedSubject here as it depends on an async fetch
+            }
+        } catch (e) {
+            console.warn("Could not load curriculum preferences from localStorage", e);
+        }
+    }, []);
+
+    useEffect(() => {
+        const prefs = { board, studentClass, selectedSubject };
+        // Avoid saving an empty subject on initial load
+        if (selectedSubject) {
+            localStorage.setItem(CURRICULUM_PREFS_KEY, JSON.stringify(prefs));
+        }
+    }, [board, studentClass, selectedSubject]);
     
+    const availableClasses = useMemo(() => {
+        switch (board) {
+            case 'WBBSE':
+            case 'ICSE':
+                return CLASSES.filter(c => c <= 10);
+            case 'WBCHSE':
+            case 'ISC':
+                return CLASSES.filter(c => c > 10);
+            case 'CBSE':
+            default:
+                return CLASSES;
+        }
+    }, [board]);
+    
+    useEffect(() => {
+        if (!availableClasses.includes(studentClass)) {
+            setStudentClass(availableClasses[0]);
+        }
+    }, [availableClasses, studentClass]);
+
     useEffect(() => {
         setLoadingSubjects(true);
         setSubjects([]);
@@ -149,15 +223,29 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
         getSubjectsAI(board, studentClass, lang, userApiKey, userOpenApiKey)
             .then(subjectList => {
                 setSubjects(subjectList);
-                const preferredSubject = subjectList.find(s => s.toLowerCase().includes('biology') || s.toLowerCase().includes('life science'));
-                if (preferredSubject) {
-                    setSelectedSubject(preferredSubject);
-                } else if (subjectList.length > 0) {
-                    setSelectedSubject(subjectList[0]);
+                const savedPrefsRaw = localStorage.getItem(CURRICULUM_PREFS_KEY);
+                let savedSubject = '';
+                if (savedPrefsRaw) {
+                    const savedPrefs = JSON.parse(savedPrefsRaw);
+                    if (savedPrefs.board === board && savedPrefs.studentClass === studentClass) {
+                        savedSubject = savedPrefs.selectedSubject;
+                    }
+                }
+
+                if (savedSubject && subjectList.includes(savedSubject)) {
+                    setSelectedSubject(savedSubject);
+                } else {
+                    const preferredSubject = subjectList.find(s => s.toLowerCase().includes('biology') || s.toLowerCase().includes('life science'));
+                    if (preferredSubject) {
+                        setSelectedSubject(preferredSubject);
+                    } else if (subjectList.length > 0) {
+                        setSelectedSubject(subjectList[0]);
+                    }
                 }
             })
             .catch(() => showToast("Could not fetch subjects.", 'error'))
             .finally(() => setLoadingSubjects(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [board, studentClass, lang, userApiKey, userOpenApiKey, showToast]);
     
     useEffect(() => {
@@ -344,50 +432,44 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
         };
         reader.readAsDataURL(file);
     };
-
-    const handleAskDoubt = async () => {
-        if (!doubtText && !doubtImage) return;
-        setIsTutorLoading(true);
-        setTutorResponse('');
-        try {
-            const response = await answerDoubtAI(studentClass, lang, doubtText, doubtImage || undefined, userApiKey, userOpenApiKey);
-            setTutorResponse(response);
-        } catch (e) {
-            showToast("AI Tutor is unavailable right now.", 'error');
-        } finally {
-            setIsTutorLoading(false);
-        }
-    };
-    
-    const handleDoubtImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (file) {
-            const reader = new FileReader();
-            reader.onloadend = () => setDoubtImage(reader.result as string);
-            reader.readAsDataURL(file);
-        }
-    };
     
     const handleGenerateGuide = async () => {
-        if(!studyChapter) return;
+        if(!studyChapter || !session?.user) return;
         setIsGeneratingGuide(true);
         try {
             const content = await generateStudyGuideAI(studyChapter, studentClass, guideTopic, lang, userApiKey, userOpenApiKey);
             setGuideContent(content);
+            const { error } = await supabase.from('student_generated_content').insert({
+                user_id: session.user.id,
+                type: 'study_guide',
+                title: `${guideTopic} for ${studyChapter}`,
+                content: { markdown: content },
+            });
+            if (error) throw error;
+            showToast("Study guide saved to your dashboard!", "success");
             setIsGuideModalOpen(true);
         } catch(e) {
-            showToast("Failed to generate guide.", "error");
+            console.error("Error generating or saving guide:", e);
+            showToast("Failed to generate or save guide.", "error");
         } finally {
             setIsGeneratingGuide(false);
         }
     };
 
     const handleGenerateFlashcards = async () => {
-        if (!studyChapter) return;
+        if (!studyChapter || !session?.user) return;
         setIsGeneratingFlashcards(true);
         try {
             const generated = await generateFlashcardsAI(studyChapter, studentClass, 10, lang, userApiKey, userOpenApiKey);
             setFlashcards(generated);
+            const { error } = await supabase.from('student_generated_content').insert({
+                user_id: session.user.id,
+                type: 'flashcards',
+                title: `Flashcards for ${studyChapter}`,
+                content: generated,
+            });
+            if (error) throw error;
+            showToast("Flashcards saved to your dashboard!", "success");
             setIsFlashcardModalOpen(true);
         } catch (error) {
             showToast(t('apiError', lang), 'error');
@@ -411,7 +493,7 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
 
             {/* Curriculum Selection */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
-                <h2 className="text-xl font-bold font-serif-display text-slate-700">{t('curriculumSelection', lang)}</h2>
+                <AnimatedHeader emoji="🎯" animation="animate-pulse" title={t('curriculumSelection', lang)} />
                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
                         <label className={labelStyles}>{t('board', lang)}</label>
@@ -422,7 +504,7 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
                     <div>
                         <label className={labelStyles}>{t('class', lang)}</label>
                         <select value={studentClass} onChange={e => setStudentClass(parseInt(e.target.value))} className={inputStyles}>
-                            {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+                            {availableClasses.map(c => <option key={c} value={c}>{c}</option>)}
                         </select>
                     </div>
                      <div>
@@ -440,44 +522,59 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
                 </div>
             </div>
             
-            {/* New Feature: Scan Paper */}
+            {/* AI MCQ Challenge */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
-                <h2 className="text-xl font-bold font-serif-display text-slate-700">{t('scanYourPaper', lang)}</h2>
-                <p className="text-sm text-slate-500">{t('scanYourPaperSubtitle', lang)}</p>
+                <AnimatedHeader emoji="🏆" animation="animate-bobbing" title={t('aiMcqChallenge', lang)} />
+                <p className="text-sm text-slate-500">{t('aiMcqChallengeSubtitle', lang)}</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label className={labelStyles}>{t('chapter', lang)}</label>
+                        <input list="chapters-datalist" value={mcqChapter} onChange={e => setMcqChapter(e.target.value)} className={inputStyles}
+                            placeholder={loadingChapters || !selectedSubject ? 'Select a subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
+                    </div>
+                    <div>
+                        <label className={labelStyles}>{t('numberOfQuestions', lang)}</label>
+                        <input type="number" value={mcqNumQuestions} onChange={e => setMcqNumQuestions(Math.max(1, parseInt(e.target.value)))} min="1" max="50" className={inputStyles} />
+                    </div>
+                </div>
                 <div className="flex justify-end">
-                    <button onClick={() => openCamera(handleScanCapture)} disabled={isProcessingScan} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all disabled:bg-indigo-300">
-                        {isProcessingScan ? t('analyzingPaper', lang) : `📷 ${t('scanWithCamera', lang)}`}
+                    <button onClick={handleStartMcqChallenge} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all">
+                        {t('startMcqChallenge', lang)}
                     </button>
                 </div>
             </div>
 
-            {/* New Feature: Diagram Practice */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
-                <h2 className="text-xl font-bold font-serif-display text-slate-700">{t('diagramPractice', lang)}</h2>
-                <p className="text-sm text-slate-500">{t('diagramPracticeSubtitle', lang)}</p>
-                <div className="flex flex-col sm:flex-row gap-2">
-                     <input list="chapters-datalist" value={diagramChapter} onChange={e => setDiagramChapter(e.target.value)} className={`${inputStyles} flex-grow`}
-                        placeholder={loadingChapters || !selectedSubject ? 'Select a subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
-                    <button onClick={handleSuggestDiagrams} disabled={isSuggestingDiagrams || !diagramChapter} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all disabled:bg-indigo-300">
-                        {isSuggestingDiagrams ? t('suggestingDiagrams', lang) : `💡 ${t('suggestDiagrams', lang)}`}
-                    </button>
+            {/* Study Smarter section with new Quick Study Guide */}
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6">
+                <AnimatedHeader emoji="💡" animation="animate-beat" title={t('studySmarter', lang)} />
+                <div>
+                    <label className={labelStyles}>{t('quickStudyGuide', lang)}</label>
+                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <input list="chapters-datalist" value={studyChapter} onChange={e => setStudyChapter(e.target.value)} className={`${inputStyles}`}
+                            placeholder={loadingChapters || !selectedSubject ? 'Select a subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
+                        <select value={guideTopic} onChange={e => setGuideTopic(e.target.value)} className={inputStyles}>
+                            <option value="Definitions">{t('definitions', lang)}</option>
+                            <option value="Key Differences">{t('keyDifferences', lang)}</option>
+                            <option value="Process Explanations">{t('processExplanations', lang)}</option>
+                        </select>
+                        <button onClick={handleGenerateGuide} disabled={isGeneratingGuide || !studyChapter} className="px-5 py-2.5 bg-gradient-to-r from-purple-500 to-indigo-600 text-white font-semibold rounded-lg shadow-sm disabled:opacity-50">
+                            {isGeneratingGuide ? t('generatingGuide', lang) : `📝 ${t('generateGuide', lang)}`}
+                        </button>
+                    </div>
                 </div>
-            </div>
-
-            {/* New Feature: AI Tutor */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
-                <h2 className="text-xl font-bold font-serif-display text-slate-700">{t('aiTutor', lang)}</h2>
-                <p className="text-sm text-slate-500">{t('aiTutorSubtitle', lang)}</p>
-                <div className="flex justify-end">
-                    <button onClick={() => setIsTutorModalOpen(true)} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all">
-                       🧑‍🏫 {t('askYourDoubt', lang)}
-                    </button>
+                <div>
+                    <label className={labelStyles}>{t('flashcardGenerator', lang)}</label>
+                     <div className="flex justify-end">
+                         <button onClick={handleGenerateFlashcards} disabled={isGeneratingFlashcards || !studyChapter} className="w-full sm:w-auto px-5 py-2.5 bg-gradient-to-r from-purple-500 to-indigo-600 text-white font-semibold rounded-lg shadow-sm disabled:opacity-50">
+                            {isGeneratingFlashcards ? t('generating', lang) : `🧠 ${t('generateFlashcards', lang)}`}
+                        </button>
+                    </div>
                 </div>
             </div>
 
             {/* Custom Practice Session */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
-                <h2 className="text-xl font-bold font-serif-display text-slate-700">{t('customPracticeSession', lang)}</h2>
+                <AnimatedHeader emoji="✍️" animation="animate-sway" title={t('customPracticeSession', lang)} />
                 <p className="text-sm text-slate-500">{t('customPracticeSessionSubtitle', lang)}</p>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="md:col-span-3">
@@ -503,56 +600,31 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
                     </button>
                 </div>
             </div>
-            
-             {/* AI MCQ Challenge */}
+
+            {/* New Feature: Diagram Practice */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
-                <h2 className="text-xl font-bold font-serif-display text-slate-700">{t('aiMcqChallenge', lang)}</h2>
-                <p className="text-sm text-slate-500">{t('aiMcqChallengeSubtitle', lang)}</p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                        <label className={labelStyles}>{t('chapter', lang)}</label>
-                        <input list="chapters-datalist" value={mcqChapter} onChange={e => setMcqChapter(e.target.value)} className={inputStyles}
-                            placeholder={loadingChapters || !selectedSubject ? 'Select a subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
-                    </div>
-                    <div>
-                        <label className={labelStyles}>{t('numberOfQuestions', lang)}</label>
-                        <input type="number" value={mcqNumQuestions} onChange={e => setMcqNumQuestions(Math.max(1, parseInt(e.target.value)))} min="1" max="50" className={inputStyles} />
-                    </div>
-                </div>
-                <div className="flex justify-end">
-                    <button onClick={handleStartMcqChallenge} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all">
-                        {t('startMcqChallenge', lang)}
+                <AnimatedHeader emoji="🎨" animation="animate-tilt" title={t('diagramPractice', lang)} />
+                <p className="text-sm text-slate-500">{t('diagramPracticeSubtitle', lang)}</p>
+                <div className="flex flex-col sm:flex-row gap-2">
+                     <input list="chapters-datalist" value={diagramChapter} onChange={e => setDiagramChapter(e.target.value)} className={`${inputStyles} flex-grow`}
+                        placeholder={loadingChapters || !selectedSubject ? 'Select a subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
+                    <button onClick={handleSuggestDiagrams} disabled={isSuggestingDiagrams || !diagramChapter} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all disabled:bg-indigo-300">
+                        {isSuggestingDiagrams ? t('suggestingDiagrams', lang) : `💡 ${t('suggestDiagrams', lang)}`}
                     </button>
                 </div>
             </div>
 
-            {/* Study Smarter section with new Quick Study Guide */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6">
-                <h2 className="text-xl font-bold font-serif-display text-slate-700">{t('studySmarter', lang)}</h2>
-                <div>
-                    <label className={labelStyles}>{t('quickStudyGuide', lang)}</label>
-                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                        <input list="chapters-datalist" value={studyChapter} onChange={e => setStudyChapter(e.target.value)} className={`${inputStyles}`}
-                            placeholder={loadingChapters || !selectedSubject ? 'Select a subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
-                        <select value={guideTopic} onChange={e => setGuideTopic(e.target.value)} className={inputStyles}>
-                            <option value="Definitions">{t('definitions', lang)}</option>
-                            <option value="Key Differences">{t('keyDifferences', lang)}</option>
-                            <option value="Process Explanations">{t('processExplanations', lang)}</option>
-                        </select>
-                        <button onClick={handleGenerateGuide} disabled={isGeneratingGuide || !studyChapter} className="px-5 py-2.5 bg-gradient-to-r from-purple-500 to-indigo-600 text-white font-semibold rounded-lg shadow-sm disabled:opacity-50">
-                            {isGeneratingGuide ? t('generatingGuide', lang) : `📝 ${t('generateGuide', lang)}`}
-                        </button>
-                    </div>
-                </div>
-                <div>
-                    <label className={labelStyles}>{t('flashcardGenerator', lang)}</label>
-                     <div className="flex justify-end">
-                         <button onClick={handleGenerateFlashcards} disabled={isGeneratingFlashcards || !studyChapter} className="w-full sm:w-auto px-5 py-2.5 bg-gradient-to-r from-purple-500 to-indigo-600 text-white font-semibold rounded-lg shadow-sm disabled:opacity-50">
-                            {isGeneratingFlashcards ? t('generating', lang) : `🧠 ${t('generateFlashcards', lang)}`}
-                        </button>
-                    </div>
+            {/* New Feature: Scan Paper */}
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
+                <AnimatedHeader emoji="📸" animation="animate-flash" title={t('scanYourPaper', lang)} />
+                <p className="text-sm text-slate-500">{t('scanYourPaperSubtitle', lang)}</p>
+                <div className="flex justify-end">
+                    <button onClick={() => openCamera(handleScanCapture)} disabled={isProcessingScan} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all disabled:bg-indigo-300">
+                        {isProcessingScan ? t('analyzingPaper', lang) : `📷 ${t('scanWithCamera', lang)}`}
+                    </button>
                 </div>
             </div>
+
             <datalist id="chapters-datalist">
                 {chapters.map(c => <option key={c} value={c} />)}
             </datalist>
@@ -623,33 +695,6 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
             </Modal>
             <Modal isOpen={isGuideModalOpen} onClose={() => setIsGuideModalOpen(false)} title={t('yourStudyGuide', lang)}>
                 <MarkdownRenderer content={guideContent} />
-            </Modal>
-             <Modal isOpen={isTutorModalOpen} onClose={() => setIsTutorModalOpen(false)} title={t('aiTutor', lang)}>
-                <div className="space-y-4">
-                    <h3 className="font-bold">{t('askYourDoubt', lang)}</h3>
-                    <textarea value={doubtText} onChange={e => setDoubtText(e.target.value)} rows={4} className={inputStyles} placeholder={t('typeYourQuestion', lang)} />
-                    <div>
-                        <label className="block text-sm font-medium text-slate-600">{t('orUploadImage', lang)}</label>
-                        <input type="file" onChange={handleDoubtImageUpload} accept="image/*" className="mt-1 text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"/>
-                        {doubtImage && <img src={doubtImage} alt="Doubt preview" className="mt-2 rounded-lg max-h-40 w-auto border" />}
-                    </div>
-                    <div className="flex justify-end">
-                        <button onClick={handleAskDoubt} disabled={isTutorLoading} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm disabled:bg-indigo-300">
-                            {isTutorLoading ? t('gettingExplanation', lang) : t('getExplanation', lang)}
-                        </button>
-                    </div>
-                    {isTutorLoading && (
-                        <div className="flex-grow flex items-center justify-center py-4">
-                            <div className="w-8 h-8 border-4 border-t-indigo-600 border-slate-200 rounded-full animate-spin"></div>
-                        </div>
-                    )}
-                    {tutorResponse && (
-                        <div className="bg-slate-50 p-4 rounded-lg border max-h-[40vh] overflow-y-auto">
-                            <h4 className="font-bold mb-2">{t('tutorResponse', lang)}</h4>
-                            <MarkdownRenderer content={tutorResponse} />
-                        </div>
-                    )}
-                </div>
             </Modal>
         </div>
     );
