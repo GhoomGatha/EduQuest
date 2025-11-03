@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, createContext, useContext, ReactNode, useMemo } from 'react';
 import { supabase } from '../services/supabaseClient';
 import { Session, User } from '@supabase/supabase-js';
@@ -28,97 +27,65 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   useEffect(() => {
     let isMounted = true;
-    const AUTH_TIMEOUT = 8000; // 8 seconds
 
-    const fetchInitialSession = async () => {
+    // Helper to fetch and set the user profile
+    const fetchUserProfile = async (user: User | null) => {
+      if (!user) {
+        if (isMounted) setProfile(null);
+        return;
+      }
       try {
-        const sessionPromise = supabase.auth.getSession();
-        
-        const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Authentication timed out.')), AUTH_TIMEOUT)
-        );
-
-        // Race the getSession call against the timeout
-        const { data: { session: currentSession }, error: sessionError } = await Promise.race([
-            sessionPromise, 
-            timeoutPromise
-        ]) as { data: { session: Session | null }, error: any };
-
-        if (!isMounted) return;
-
-        if (sessionError) throw sessionError;
-
-        setSession(currentSession);
-
-        if (currentSession?.user) {
-          const { data: profileData, error: profileError } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', currentSession.user.id)
-            .single();
-
-          if (profileError && profileError.code !== 'PGRST116') {
-            throw profileError;
-          }
-          if (isMounted) {
-            setProfile(profileData || null);
-          }
-        } else {
-            if (isMounted) {
-                setProfile(null);
-            }
+        const { data: profileData, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', user.id)
+          .single();
+        if (profileError && profileError.code !== 'PGRST116') { // PGRST116: no rows found
+          throw profileError;
         }
-      } catch (error: any) {
-        console.warn("Auth initialization error:", error.message);
-        if (isMounted) {
-          setSession(null);
-          setProfile(null);
-        }
-      } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
+        if (isMounted) setProfile(profileData || null);
+      } catch (error) {
+        console.error("Error fetching profile:", error);
+        if (isMounted) setProfile(null); // Clear profile on error
       }
     };
 
-    fetchInitialSession();
+    // Handle the initial session check on app load
+    const initializeAuth = async () => {
+      try {
+        const { data: { session: currentSession }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        if (isMounted) setSession(currentSession);
+        // Fetch profile before setting loading to false
+        await fetchUserProfile(currentSession?.user ?? null);
+      } catch (error) {
+        console.error("Auth initialization error:", error);
+        // Ensure state is clean on error
+        if (isMounted) {
+            setSession(null);
+            setProfile(null);
+        }
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+    
+    initializeAuth();
 
+    // Set up a listener for auth state changes (login/logout)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (_event, newSession) => {
-        if (!isMounted) return;
-
-        // If the session changes, update it. This handles login/logout.
-        setSession(newSession);
-
-        if (!newSession?.user) {
-          setProfile(null);
-          return;
-        }
-
-        // If a new session appears, re-fetch profile to be sure.
-        // This is important for cases like sign-in, where profile might not have been available initially.
-        try {
-          const { data: profileData, error: profileError } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', newSession.user.id)
-            .single();
-          
-          if (profileError && profileError.code !== 'PGRST116') {
-            throw profileError;
-          }
-          if (isMounted) {
-             setProfile(profileData || null);
-          }
-        } catch (error) {
-          console.error("Error fetching profile on auth state change:", error);
-          if (isMounted) {
-            setProfile(null);
-          }
-        }
+        // When auth state changes, enter loading state
+        if (isMounted) setLoading(true);
+        if (isMounted) setSession(newSession);
+        // Fetch the new user's profile
+        await fetchUserProfile(newSession?.user ?? null);
+        // Exit loading state once everything is updated
+        if (isMounted) setLoading(false);
       }
     );
-    
+
+    // Cleanup subscription on unmount
     return () => {
       isMounted = false;
       subscription?.unsubscribe();

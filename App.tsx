@@ -76,7 +76,7 @@ const App: React.FC = () => {
     }, [session, checkSchema]);
 
     if (loading) {
-        return <LoadingSpinner message="Authenticating..." />;
+        return <LoadingSpinner message="Loading EduQuest..." />;
     }
 
     if (schemaError) {
@@ -87,13 +87,8 @@ const App: React.FC = () => {
     if (!session) {
         return <Auth />;
     }
-    
-    if (!profile) {
-        // This can happen briefly while the profile is created by the auth hook.
-        return <LoadingSpinner message="Loading profile..." />;
-    }
 
-    if (!profile.full_name) {
+    if (!profile?.full_name) {
         return <ProfileComponent />;
     }
 
