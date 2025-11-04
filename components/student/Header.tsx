@@ -1,7 +1,10 @@
 
+
 import React from 'react';
 import { Language } from '../../types';
 import { t } from '../../utils/localization';
+import LiveClock from '../LiveClock';
+import LanguageSelector from '../LanguageSelector';
 
 interface HeaderProps {
   lang: Language;
@@ -23,12 +26,9 @@ const Header: React.FC<HeaderProps> = ({ lang, onLangChange, children }) => {
             </h1>
             <p className="text-sm text-slate-500">{t('studentAppSubtitle', lang)}</p>
           </div>
-          <div className="flex items-center space-x-2">
-            <select value={lang} onChange={(e) => onLangChange(e.target.value as Language)} className="p-2 border border-slate-300 rounded-lg bg-white shadow-sm text-sm">
-              <option value="en">English</option>
-              <option value="bn">বাংলা</option>
-              <option value="hi">हिन्दी</option>
-            </select>
+          <div className="flex items-center space-x-3">
+            <LiveClock />
+            <LanguageSelector lang={lang} onLangChange={onLangChange} />
           </div>
         </div>
         {children}

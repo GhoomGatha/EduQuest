@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useRef } from 'react';
 import { t } from '../utils/localization';
 import { Language, Profile } from '../types';
@@ -154,6 +153,11 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
 
   const handleLogout = async () => {
     setIsLoggingOut(true);
+    const currentSessionStart = localStorage.getItem('eduquest_current_session_start');
+    if (currentSessionStart) {
+        localStorage.setItem('eduquest_last_login', currentSessionStart);
+    }
+    localStorage.removeItem('eduquest_current_session_start');
     const { error } = await supabase.auth.signOut();
     if (error) {
         console.error('Logout error:', error.message);

@@ -36,11 +36,13 @@ const fetchFontAsBase64 = async (url: string): Promise<string> => {
 // reflecting the latest structure of the repository and fixing 404 errors.
 const NOTO_SANS_BENGALI_URL = 'https://raw.githubusercontent.com/google/fonts/main/apache/notosansbengali/NotoSansBengali-Regular.ttf';
 const NOTO_SANS_DEVANAGARI_URL = 'https://raw.githubusercontent.com/google/fonts/main/apache/notosansdevanagari/NotoSansDevanagari-Regular.ttf';
+const NOTO_SANS_KANNADA_URL = 'https://raw.githubusercontent.com/google/fonts/main/apache/notosanskannada/NotoSansKannada-Regular.ttf';
 
 
 // In-memory cache to avoid re-fetching the font on every PDF export.
 let bengaliFontCache: string | null = null;
 let devanagariFontCache: string | null = null;
+let kannadaFontCache: string | null = null;
 
 /**
  * Fetches the Noto Sans Bengali font, converts it to base64, and caches it.
@@ -68,6 +70,21 @@ export const getDevanagariFontBase64 = async (): Promise<string> => {
     const fontData = await fetchFontAsBase64(NOTO_SANS_DEVANAGARI_URL);
     if (fontData) {
         devanagariFontCache = fontData;
+    }
+    return fontData;
+};
+
+/**
+ * Fetches the Noto Sans Kannada font, converts it to base64, and caches it.
+ * @returns A promise that resolves to the base64 encoded font data.
+ */
+export const getKannadaFontBase64 = async (): Promise<string> => {
+    if (kannadaFontCache) {
+        return kannadaFontCache;
+    }
+    const fontData = await fetchFontAsBase64(NOTO_SANS_KANNADA_URL);
+    if (fontData) {
+        kannadaFontCache = fontData;
     }
     return fontData;
 };

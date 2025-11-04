@@ -77,7 +77,7 @@ export interface Profile {
   avatar_url?: string;
 }
 
-export type Language = 'en' | 'bn' | 'hi';
+export type Language = 'en' | 'bn' | 'hi' | 'kn';
 
 export type Tab = 'bank' | 'generator' | 'ai_tutor' | 'archive' | 'settings';
 

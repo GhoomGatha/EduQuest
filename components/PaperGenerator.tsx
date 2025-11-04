@@ -5,7 +5,7 @@ import { generateQuestionsAI, getChaptersAI, getSubjectsAI } from '../services/g
 import { CLASSES, YEARS, SEMESTERS, BOARDS, MARKS } from '../constants';
 import { useHistory } from '../hooks/useHistory';
 import Modal from './Modal';
-import { getBengaliFontBase64, getDevanagariFontBase64 } from '../utils/fontData';
+import { getBengaliFontBase64, getDevanagariFontBase64, getKannadaFontBase64 } from '../utils/fontData';
 import { loadScript } from '../utils/scriptLoader';
 
 const WBBSE_SYLLABUS_KEY = 'eduquest_wbbse_syllabus_only_v1';
@@ -50,7 +50,7 @@ interface PaperGeneratorDraft {
 interface PaperGeneratorProps {
     questions: Question[];
     onSavePaper: (paper: Paper) => void;
-    lang: 'en' | 'bn' | 'hi';
+    lang: 'en' | 'bn' | 'hi' | 'kn';
     showToast: (message: string, type?: 'success' | 'error') => void;
     userApiKey?: string;
     userOpenApiKey?: string;
@@ -656,6 +656,15 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                 fontName = 'NotoSansDevanagari';
             } else {
                 showToast('Could not load Hindi font for PDF.', 'error');
+            }
+        } else if (lang === 'kn') {
+            const fontData = await getKannadaFontBase64();
+            if (fontData) {
+                doc.addFileToVFS('NotoSansKannada-Regular.ttf', fontData);
+                doc.addFont('NotoSansKannada-Regular.ttf', 'NotoSansKannada', 'normal');
+                fontName = 'NotoSansKannada';
+            } else {
+                showToast('Could not load Kannada font for PDF.', 'error');
             }
         }
 

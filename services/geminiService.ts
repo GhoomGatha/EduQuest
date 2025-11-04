@@ -115,6 +115,7 @@ const languageMap: Record<Language, string> = {
     en: 'English',
     bn: 'Bengali',
     hi: 'Hindi',
+    kn: 'Kannada',
 };
 
 const getStyleGuideline = (questionType?: string): string => {

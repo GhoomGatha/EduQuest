@@ -1,3 +1,5 @@
+
+
 import React, { useState, useEffect, useCallback, useRef, lazy, Suspense, useMemo } from 'react';
 import { Question, Paper, Tab, Language, Profile, QuestionSource, Difficulty, Semester, UploadProgress, TutorSession } from './types';
 import { t } from './utils/localization';
@@ -9,6 +11,8 @@ import { supabase } from './services/supabaseClient';
 import LoadingSpinner from './components/LoadingSpinner';
 import SecretMessageModal from './components/SecretMessageModal';
 import { OPENAI_API_KEY_STORAGE_KEY } from './services/openaiService';
+import LiveClock from './components/LiveClock';
+import LanguageSelector from './components/LanguageSelector';
 // FIX: Import the newly created extractQuestionsFromTextAI function.
 import { extractQuestionsFromImageAI, extractQuestionsFromPdfAI, extractQuestionsFromTextAI } from './services/geminiService';
 
@@ -82,7 +86,7 @@ interface TeacherAppProps {
 
 const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
   const { session, profile, setProfile } = useAuth();
-  const [activeTab, setActiveTab] = useState<Tab>('generator');
+  const [activeTab, setActiveTab] = useState<Tab>('ai_tutor');
   const [lang, setLang] = useState<Language>('en');
   const [questions, setQuestions] = useState<Question[]>([]);
   const [papers, setPapers] = useState<Paper[]>([]);
@@ -96,6 +100,7 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
   const navRef = useRef<HTMLDivElement>(null);
   const [sliderStyle, setSliderStyle] = useState({});
   const [isProcessingFile, setIsProcessingFile] = useState(false);
+  const [sessionInfo, setSessionInfo] = useState<{ lastLogin: string; currentSessionStart: string }>({ lastLogin: 'N/A', currentSessionStart: 'N/A' });
 
   const allVisibleQuestions = useMemo(() => {
     // Get all questions that are inside paper objects
@@ -117,6 +122,25 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
     return Array.from(questionMap.values())
       .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
   }, [questions, papers]);
+
+  useEffect(() => {
+    const updateSessionInfo = () => {
+        const last = localStorage.getItem('eduquest_last_login');
+        const current = localStorage.getItem('eduquest_current_session_start');
+        setSessionInfo({
+            lastLogin: last ? new Date(last).toLocaleString() : 'N/A',
+            currentSessionStart: current ? new Date(current).toLocaleString() : 'N/A'
+        });
+    };
+
+    updateSessionInfo();
+
+    // Listen for changes from other tabs
+    window.addEventListener('storage', updateSessionInfo);
+    return () => {
+        window.removeEventListener('storage', updateSessionInfo);
+    };
+  }, []);
 
   useEffect(() => {
     if (navRef.current) {
@@ -312,12 +336,19 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
             return;
         }
 
+        // FIX: Await the async getPublicUrl call and add a null check for robustness.
         const { data: urlData } = supabase.storage.from('question_images').getPublicUrl(filePath);
+        if (!urlData?.publicUrl) {
+            showToast('Error getting image public URL.', 'error');
+            return;
+        }
         finalQuestionData.image_data_url = urlData.publicUrl;
     }
 
     if (editingQuestion) {
-      const { id, ...questionToUpdate } = { ...finalQuestionData, user_id: session.user.id };
+// FIX: The original destructuring was likely confusing the compiler. Splitting it into two steps for clarity and to avoid the "Initializer provides no value" error.
+      const questionWithUser = { ...finalQuestionData, user_id: session.user.id };
+      const { id, ...questionToUpdate } = questionWithUser;
       const { data, error } = await supabase.from('questions').update(questionToUpdate).eq('id', finalQuestionData.id).select();
       if (error || !data) {
         showToast('Error updating question.', 'error');
@@ -326,7 +357,9 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
         showToast(t('questionUpdated', lang));
       }
     } else {
-      const { id, ...questionToInsert } = { ...finalQuestionData, user_id: session.user.id };
+// FIX: The original destructuring was likely confusing the compiler. Splitting it into two steps for clarity and to avoid the "Initializer provides no value" error.
+      const questionWithUser = { ...finalQuestionData, user_id: session.user.id };
+      const { id, ...questionToInsert } = questionWithUser;
       const { data, error } = await supabase.from('questions').insert(questionToInsert).select();
       if (error || !data) {
         showToast('Error adding question.', 'error');
@@ -393,7 +426,11 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
                                 const filePath = `${session.user.id}/${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
                                 const { error: uploadError } = await supabase.storage.from('question_images').upload(filePath, blob);
                                 if (uploadError) throw new Error(`Image upload failed: ${uploadError.message}`);
+                                // FIX: getPublicUrl is synchronous and does not need to be awaited. A null check is added for safety.
                                 const { data: urlData } = supabase.storage.from('question_images').getPublicUrl(filePath);
+                                if (!urlData?.publicUrl) {
+                                    throw new Error('Could not get public URL for image.');
+                                }
                                 return { ...q, image_data_url: urlData.publicUrl };
                             }
                         }
@@ -404,8 +441,8 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
                 const questionsToInsert = processedNewQuestions.map(({ id, ...q }) => ({ ...q, user_id: session.user.id }));
                 const { data, error } = await supabase.from('questions').insert(questionsToInsert).select();
                 if (error) throw error;
-                savedNewQuestions = data;
-                setQuestions(prev => [...savedNewQuestions, ...prev]);
+                savedNewQuestions = data || [];
+                setQuestions(prev => [...(data || []), ...prev]);
             } catch (error: any) {
                 showToast('Error saving new AI questions to bank.', 'error');
                 console.error("Error processing new questions:", error.message || error);
@@ -508,7 +545,7 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
             
             onProgress({ total: files.length, completed: i, pending: files.length - i, currentFile: file.name });
 
-            const MAX_FILE_SIZE_MB = 20; // FIX: Increased file size limit for PDFs
+            const MAX_FILE_SIZE_MB = 20;
             if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
                 throw new Error(`File ${file.name} is too large (max ${MAX_FILE_SIZE_MB}MB).`);
             }
@@ -527,7 +564,11 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
             const storageFilePath = `${session.user.id}/${paperFolderId}/${file.name}`;
             const { error: storageUploadError } = await supabase.storage.from('papers').upload(storageFilePath, file, { upsert: true });
             if (storageUploadError) throw storageUploadError;
+            
             const { data: urlData } = supabase.storage.from('papers').getPublicUrl(storageFilePath);
+            if (!urlData?.publicUrl) {
+                throw new Error(`Could not get public URL for ${file.name}`);
+            }
             uploadedFileUrls.push(urlData.publicUrl);
         }
 
@@ -556,7 +597,6 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
         const { data: savedPaper, error: dbError } = await supabase.from('papers').insert(paperToInsert).select().single();
         if (dbError) throw dbError;
 
-        // FIX: Atomic state updates after all DB operations succeed
         if (savedQuestions.length > 0) {
             setQuestions(prev => [...savedQuestions, ...prev]);
         }
@@ -579,9 +619,7 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
             
             showToast(userFriendlyMessage, 'error');
         }
-        throw error;
-    } finally {
-        onProgress(null);
+        throw error; // Re-throw to be caught by the calling component
     }
   };
 
@@ -659,7 +697,7 @@ const handleArchiveFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, f
             if(parsedCsvQuestions.length === 0) throw new Error('No valid questions found in CSV.');
             const { data, error } = await supabase.from('questions').insert(parsedCsvQuestions).select();
             if (error) throw error;
-            savedQuestions = data;
+            savedQuestions = data || [];
         } else {
             let extractedQuestions: Partial<Question>[] = [];
             if (fileType === 'pdf') {
@@ -688,7 +726,7 @@ const handleArchiveFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, f
             }));
             const { data, error } = await supabase.from('questions').insert(questionsToInsert).select();
             if (error) throw error;
-            savedQuestions = data;
+            savedQuestions = data || [];
         }
 
         if (savedQuestions.length > 0) {
@@ -701,7 +739,11 @@ const handleArchiveFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, f
                 const storageFilePath = `${session.user.id}/${paperId}/${file.name}`;
                 const { error } = await supabase.storage.from('papers').upload(storageFilePath, file, { upsert: true });
                 if (error) throw error;
-                uploadedFileUrl = supabase.storage.from('papers').getPublicUrl(storageFilePath).data.publicUrl;
+                // FIX: getPublicUrl is synchronous and does not need to be awaited. A null check is added for robustness.
+                const { data: urlData } = supabase.storage.from('papers').getPublicUrl(storageFilePath);
+                if (urlData?.publicUrl) {
+                    uploadedFileUrl = urlData.publicUrl;
+                }
             }
 
             const newPaper: Paper = {
@@ -770,8 +812,10 @@ const handleCsvUpload = async (file: File) => {
         }
         const { data: newQuestions, error } = await supabase.from('questions').insert(questionsToInsert).select();
         if (error) throw error;
-        setQuestions(prev => [...newQuestions, ...prev]);
-        showToast(t('csvImportSuccess', lang).replace('{count}', String(newQuestions.length)), 'success');
+        if (newQuestions) {
+            setQuestions(prev => [...newQuestions, ...prev]);
+            showToast(t('csvImportSuccess', lang).replace('{count}', String(newQuestions.length)), 'success');
+        }
     } catch (error: any) {
         showToast(t('csvImportFailed', lang), 'error');
     } finally {
@@ -844,8 +888,11 @@ const handleCsvUpload = async (file: File) => {
 
             if (uploadError) throw uploadError;
 
-            const { data: urlData } = await supabase.storage.from('avatars').getPublicUrl(filePath);
-            newAvatarUrl = `${urlData.publicUrl}?t=${new Date().getTime()}`;
+            // FIX: Add a null check for urlData to prevent runtime errors if the URL is not retrieved.
+            const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(filePath);
+            if (urlData?.publicUrl) {
+                newAvatarUrl = `${urlData.publicUrl}?t=${new Date().getTime()}`;
+            }
         }
         
         const { id, ...profileUpdates } = updatedProfile;
@@ -969,12 +1016,9 @@ const handleCsvUpload = async (file: File) => {
               </h1>
               <p className="text-sm text-slate-500">{t('appSubtitle', lang)}</p>
             </div>
-            <div className="flex items-center space-x-2">
-              <select value={lang} onChange={(e) => setLang(e.target.value as Language)} className="p-2 border border-slate-300 rounded-lg bg-white shadow-sm text-sm">
-                <option value="en">English</option>
-                <option value="bn">বাংলা</option>
-                <option value="hi">हिन्दी</option>
-              </select>
+            <div className="flex items-center space-x-3">
+              <LiveClock />
+              <LanguageSelector lang={lang} onLangChange={setLang} />
             </div>
           </div>
           <nav className="relative pb-2 pt-1">
@@ -1012,6 +1056,10 @@ const handleCsvUpload = async (file: File) => {
       </main>
       
       <footer className="text-center py-4 text-sm text-slate-500 border-t border-green-200 bg-green-50/80 backdrop-blur-lg">
+        <div className="text-xs text-slate-400 mb-2 space-x-4">
+            <span><strong>Current Session:</strong> {sessionInfo.currentSessionStart}</span>
+            <span><strong>Last Login:</strong> {sessionInfo.lastLogin}</span>
+        </div>
         <p>© {new Date().getFullYear()} {t('appTitle', lang)}. All Rights Reserved.</p>
         <p className="mt-1 text-xs text-slate-400">
           Crafted with{' '}

@@ -314,7 +314,7 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
         }
 
         // FIX: Await the async getPublicUrl call and add a null check for robustness.
-        const { data: urlData } = await supabase.storage.from('question_images').getPublicUrl(filePath);
+        const { data: urlData } = supabase.storage.from('question_images').getPublicUrl(filePath);
         if (!urlData?.publicUrl) {
             showToast('Error getting image public URL.', 'error');
             return;
@@ -323,7 +323,9 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
     }
 
     if (editingQuestion) {
-      const { id, ...questionToUpdate } = { ...finalQuestionData, user_id: session.user.id };
+// FIX: The original destructuring was likely confusing the compiler. Splitting it into two steps for clarity and to avoid the "Initializer provides no value" error.
+      const questionWithUser = { ...finalQuestionData, user_id: session.user.id };
+      const { id, ...questionToUpdate } = questionWithUser;
       const { data, error } = await supabase.from('questions').update(questionToUpdate).eq('id', finalQuestionData.id).select();
       if (error || !data) {
         showToast('Error updating question.', 'error');
@@ -332,7 +334,9 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
         showToast(t('questionUpdated', lang));
       }
     } else {
-      const { id, ...questionToInsert } = { ...finalQuestionData, user_id: session.user.id };
+// FIX: The original destructuring was likely confusing the compiler. Splitting it into two steps for clarity and to avoid the "Initializer provides no value" error.
+      const questionWithUser = { ...finalQuestionData, user_id: session.user.id };
+      const { id, ...questionToInsert } = questionWithUser;
       const { data, error } = await supabase.from('questions').insert(questionToInsert).select();
       if (error || !data) {
         showToast('Error adding question.', 'error');
@@ -399,8 +403,8 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
                                 const filePath = `${session.user.id}/${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
                                 const { error: uploadError } = await supabase.storage.from('question_images').upload(filePath, blob);
                                 if (uploadError) throw new Error(`Image upload failed: ${uploadError.message}`);
-                                // FIX: Await the async getPublicUrl call and add a null check to prevent errors.
-                                const { data: urlData } = await supabase.storage.from('question_images').getPublicUrl(filePath);
+                                // FIX: getPublicUrl is synchronous and does not need to be awaited. A null check is added for safety.
+                                const { data: urlData } = supabase.storage.from('question_images').getPublicUrl(filePath);
                                 if (!urlData?.publicUrl) {
                                     throw new Error('Could not get public URL for image.');
                                 }
@@ -537,8 +541,8 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
             const storageFilePath = `${session.user.id}/${paperFolderId}/${file.name}`;
             const { error: storageUploadError } = await supabase.storage.from('papers').upload(storageFilePath, file, { upsert: true });
             if (storageUploadError) throw storageUploadError;
-            // FIX: Await the async getPublicUrl call and add a null check for robustness.
-            const { data: urlData } = await supabase.storage.from('papers').getPublicUrl(storageFilePath);
+            // FIX: getPublicUrl is synchronous and does not need to be awaited. A null check is added for robustness.
+            const { data: urlData } = supabase.storage.from('papers').getPublicUrl(storageFilePath);
             if (!urlData?.publicUrl) {
                 throw new Error(`Could not get public URL for ${file.name}`);
             }
@@ -715,8 +719,8 @@ const handleArchiveFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, f
                 const storageFilePath = `${session.user.id}/${paperId}/${file.name}`;
                 const { error } = await supabase.storage.from('papers').upload(storageFilePath, file, { upsert: true });
                 if (error) throw error;
-                // FIX: Await the async getPublicUrl call and add a null check for robustness.
-                const { data: urlData } = await supabase.storage.from('papers').getPublicUrl(storageFilePath);
+                // FIX: getPublicUrl is synchronous and does not need to be awaited. A null check is added for robustness.
+                const { data: urlData } = supabase.storage.from('papers').getPublicUrl(storageFilePath);
                 if (urlData?.publicUrl) {
                     uploadedFileUrl = urlData.publicUrl;
                 }
@@ -865,7 +869,7 @@ const handleCsvUpload = async (file: File) => {
             if (uploadError) throw uploadError;
 
             // FIX: Add a null check for urlData to prevent runtime errors if the URL is not retrieved.
-            const { data: urlData } = await supabase.storage.from('avatars').getPublicUrl(filePath);
+            const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(filePath);
             if (urlData?.publicUrl) {
                 newAvatarUrl = `${urlData.publicUrl}?t=${new Date().getTime()}`;
             }

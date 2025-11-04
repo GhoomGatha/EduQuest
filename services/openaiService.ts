@@ -6,6 +6,8 @@ const languageMap: Record<Language, string> = {
     en: 'English',
     bn: 'Bengali',
     hi: 'Hindi',
+    // FIX: Add missing Kannada language mapping.
+    kn: 'Kannada',
 };
 
 // Helper to call OpenAI Chat Completions API

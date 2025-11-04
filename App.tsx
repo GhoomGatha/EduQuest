@@ -72,6 +72,10 @@ const App: React.FC = () => {
     useEffect(() => {
         if (session) {
             checkSchema(); // Initial check on app load.
+            // Set session start time on login/refresh
+            if (!localStorage.getItem('eduquest_current_session_start')) {
+                localStorage.setItem('eduquest_current_session_start', new Date().toISOString());
+            }
         }
     }, [session, checkSchema]);
 
