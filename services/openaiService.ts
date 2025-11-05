@@ -1,13 +1,10 @@
-import { Language, Question, StudentAnswer, Analysis, Flashcard, DiagramSuggestion, DiagramGrade, TestAttempt, PracticeSuggestion, Difficulty } from '../types';
-
-export const OPENAI_API_KEY_STORAGE_KEY = 'eduquest_user_openai_api_key';
+import { Language, Question, StudentAnswer, Analysis, Flashcard, DiagramSuggestion, DiagramGrade, TestAttempt, PracticeSuggestion, Difficulty, Paper } from '../types';
 
 const languageMap: Record<Language, string> = {
     en: 'English',
     bn: 'Bengali',
     hi: 'Hindi',
-    // FIX: Add missing Kannada language mapping.
-    kn: 'Kannada',
+    ka: 'Kannada',
 };
 
 // Helper to call OpenAI Chat Completions API
@@ -128,8 +125,6 @@ export const getChaptersOpenAI = async (
   }
 };
 
-// --- Start of newly added functions ---
-
 // Helper from geminiService.ts
 const getStyleGuideline = (questionType?: string): string => {
     switch (questionType) {
@@ -154,6 +149,7 @@ const getStyleGuideline = (questionType?: string): string => {
 export const generateQuestionsOpenAI = async (
   criteria: {
     class: number;
+    subject: string;
     chapter: string;
     marks: number;
     difficulty: string;
@@ -172,17 +168,22 @@ export const generateQuestionsOpenAI = async (
     const shouldGenerateAnswer = criteria.generateAnswer || ['Multiple Choice', 'Fill in the Blanks', 'True/False', 'Odd Man Out', 'Matching'].includes(criteria.questionType || '');
     
     if (criteria.questionType === 'Image-based') {
-      const textGenPrompt = `
-You are an expert biology teacher creating a question for an exam.
+        const generatedQuestions: Partial<Question>[] = [];
+        for (let i = 0; i < criteria.count; i++) {
+            if (i > 0) await new Promise(resolve => setTimeout(resolve, 2000)); // Rate limit
+
+            const textGenPrompt = `
+You are an expert ${criteria.subject} teacher creating a question for an exam.
 Your task is to generate a single JSON object containing "questionText", "answerText", and "imagePrompt".
 
 **Instructions:**
-1.  **questionText**: Create a biology question based on the criteria below. This question MUST refer to a diagram (e.g., "Identify the part labeled 'X'...", "Describe the process shown in the diagram...").
+1.  **questionText**: Create a ${criteria.subject} question based on the criteria below. This question MUST refer to a diagram (e.g., "Identify the part labeled 'X'...", "Describe the process shown in the diagram...").
 2.  **answerText**: Provide a concise, correct answer to the question. ${!shouldGenerateAnswer ? 'This field should be an empty string if an answer is not required.' : ''}
 3.  **imagePrompt**: Write a clear and detailed prompt for an image generation AI. This prompt should describe the exact diagram needed to answer the question. It should be simple, biologically accurate, and include instructions for any necessary labels (e.g., "Label the nucleus with the letter 'A'.").
 4.  All generated text MUST be in the **${targetLanguage}** language.
 
 **Criteria for the Question:**
+- Subject: ${criteria.subject}
 - Class: ${criteria.class}
 - Topic: "${criteria.chapter}"
 - Difficulty: ${criteria.difficulty}
@@ -191,146 +192,132 @@ Your task is to generate a single JSON object containing "questionText", "answer
 **Output Format:**
 Return ONLY a single valid JSON object. Do not add any text before or after the JSON.
 `;
-      const textResult = await openAIChatCompletion(openAIApiKey, textGenPrompt, true, null, signal);
-      const { questionText, answerText, imagePrompt } = textResult;
+            const textResult = await openAIChatCompletion(openAIApiKey, textGenPrompt, true, null, signal);
+            const { questionText, answerText, imagePrompt } = textResult;
 
-      if (!questionText || !imagePrompt) {
-          throw new Error("OpenAI failed to generate the question text or image prompt.");
-      }
-      
-      const base64ImageBytes = await openAIImageGeneration(openAIApiKey, imagePrompt, signal);
-      const imageDataURL = `data:image/png;base64,${base64ImageBytes}`;
-      
-      return {
-          generatedQuestions: [{
-            text: questionText,
-            answer: shouldGenerateAnswer ? answerText : undefined,
-            image_data_url: imageDataURL
-          }]
-      };
-    }
-    
-    let formatInstructions = `Each question must be of the type: "${criteria.questionType || 'Short Answer'}".`;
-    let jsonInstructions = 'Return ONLY a single valid JSON object with one key "questions", which contains an array of objects.';
-
-    const baseAnswerJson = `Each object in the "questions" array must have two required fields: "text" and "answer".`;
-    switch (criteria.questionType) {
-        case 'Multiple Choice':
-        formatInstructions = 'Each question MUST be a multiple-choice question with exactly 4 distinct options, labeled A, B, C, and D.';
-        jsonInstructions += `${baseAnswerJson}
-- The "text" field MUST contain the question followed by the 4 options, formatted like: "Question text? A) Option 1 B) Option 2 C) Option 3 D) Option 4".
-- The "answer" field MUST contain ONLY the capital letter of the correct option (e.g., "A", "B", "C", or "D").`;
-        break;
-        case 'Fill in the Blanks':
-        formatInstructions = 'Each question MUST be a fill-in-the-blanks style question. Use one or more underscores \`____\` to represent the blank part.';
-        jsonInstructions += `${baseAnswerJson}
-- "text": The question text with blanks (e.g., "The powerhouse of the cell is the ____.").
-- "answer": The word or phrase that correctly fills the blank. If there are multiple blanks, provide the answers in order, separated by a comma.`;
-        break;
-        case 'True/False':
-        formatInstructions = 'Each question MUST be a statement that can be answered with "True" or "False".';
-        jsonInstructions += `${baseAnswerJson}
-- "text": The statement to be evaluated (e.g., "Mitochondria are found in plant cells.").
-- "answer": The correct answer, which must be either "True" or "False".`;
-        break;
-        default:
-            if (shouldGenerateAnswer) {
-                jsonInstructions += `${baseAnswerJson}
-- "text": The question text.
-- "answer": A concise and correct answer to the question.`;
-            } else {
-                jsonInstructions += `
-Each object in the "questions" array must have one required field: "text". Do not include an "answer" field.`;
+            if (!questionText || !imagePrompt) {
+                throw new Error("AI failed to generate the question text or image prompt.");
             }
-        break;
+            
+            await new Promise(resolve => setTimeout(resolve, 1100)); // Rate limit
+
+            const base64Image = await openAIImageGeneration(openAIApiKey, imagePrompt, signal);
+
+            if (!base64Image) {
+                throw new Error("AI failed to generate a valid image from the provided prompt.");
+            }
+            
+            const imageDataURL = `data:image/png;base64,${base64Image}`;
+            
+            generatedQuestions.push({
+              text: questionText,
+              answer: shouldGenerateAnswer ? answerText : undefined,
+              image_data_url: imageDataURL
+            });
+        }
+        return { generatedQuestions };
     }
-    
-    const existingQuestionTexts = existingQuestions.map(q => `- ${q.text}`).join('\n');
+
+    let formatInstructions = `Each question must be of the type: "${criteria.questionType || 'Short Answer'}".`;
+    let jsonInstructions = 'The response must be a valid JSON object containing a single key "questions", which is an array of objects.';
+
+    const baseAnswerJson = `Each object must have two required fields: "text" and "answer".`;
+
+    switch (criteria.questionType) {
+        case 'Multiple Choice': formatInstructions = 'Each question MUST be a multiple-choice question with exactly 4 distinct options, labeled A, B, C, and D.'; jsonInstructions += `${baseAnswerJson}\n- The "text" field MUST contain the question followed by the 4 options, formatted like: "Question text? A) Option 1 B) Option 2 C) Option 3 D) Option 4".\n- The "answer" field MUST contain ONLY the capital letter of the correct option (e.g., "A", "B", "C", or "D").`; break;
+        case 'Fill in the Blanks': formatInstructions = 'Each question MUST be a fill-in-the-blanks style question. Use one or more underscores \`____\` to represent the blank part.'; jsonInstructions += `${baseAnswerJson}\n- "text": The question text with blanks (e.g., "The powerhouse of the cell is the ____.").\n- "answer": The word or phrase that correctly fills the blank. If there are multiple blanks, provide the answers in order, separated by a comma.`; break;
+        case 'True/False': formatInstructions = 'Each question MUST be a statement that can be answered with "True" or "False".'; jsonInstructions += `${baseAnswerJson}\n- "text": The statement to be evaluated (e.g., "Mitochondria are found in plant cells.").\n- "answer": The correct answer, which must be either "True" or "False".`; break;
+        case 'Odd Man Out': formatInstructions = 'Each question MUST be an "Odd Man Out" type. It should provide a set of 4-5 items where one does not belong.'; jsonInstructions += `${baseAnswerJson}\n- "text": The list of items, typically labeled A, B, C, D (e.g., "A) Lion B) Tiger C) Bear D) Eagle").\n- "answer": The odd item, followed by a brief justification (e.g., "D) Eagle, because it is a bird while the others are mammals.").`; break;
+        case 'Matching': formatInstructions = 'Each question MUST be a matching type with two columns, Column A and Column B, each containing 4-5 items.'; jsonInstructions += `${baseAnswerJson}\n- "text": The question text, including both columns formatted clearly (e.g., "Match Column A with Column B. Column A: 1. Mitochondria, 2. Ribosome... Column B: a. Protein synthesis, b. Powerhouse...").\n- "answer": A string representing the correct pairs (e.g., "1-b, 2-a, ...").`; break;
+        default: if (shouldGenerateAnswer) { jsonInstructions += `${baseAnswerJson}\n- "text": The question text.\n- "answer": A concise and correct answer to the question.`; } else { jsonInstructions += `\nEach object must have one required field: "text". Do not include an "answer" field.`; } break;
+    }
+
+    const existingQuestionTexts = existingQuestions.slice(0, 50).map(q => `- ${q.text}`).join('\n');
+    const keywordInstructions = criteria.keywords ? `The questions must incorporate or be related to the following keywords: ${criteria.keywords}.` : '';
+    const boardName = criteria.class >= 11 ? "WBCHSE" : "WBBSE";
+    const boardFullName = criteria.class >= 11 ? "West Bengal Council of Higher Secondary Education (WBCHSE)" : "West Bengal Board of Secondary Education (WBBSE)";
+    const syllabusInstruction = criteria.wbbseSyllabusOnly ? `You are an expert in creating question papers for the ${boardFullName} curriculum, specifically for Bengali Medium school students, for the subject of ${criteria.subject}.\nYour task is to generate ${criteria.count} unique, high-quality questions based on the criteria below.\n**CRITICAL RULE: The content of all questions and answers MUST strictly adhere to the topics, scope, and depth of the official ${boardName} ${criteria.subject} syllabus for the specified class. DO NOT include any content from other educational boards like CBSE, ICSE, etc.**` : `You are an expert in creating question papers for the subject of ${criteria.subject}. Your task is to generate ${criteria.count} unique, high-quality questions based on the criteria below.`;
 
     const prompt = `
-        You are an expert biology teacher. Generate ${criteria.count} unique questions in ${targetLanguage}.
-        Criteria:
-        - Class: ${criteria.class}, Chapter: "${criteria.chapter}", Marks: ${criteria.marks}, Difficulty: ${criteria.difficulty}
-        - ${getStyleGuideline(criteria.questionType)}
-        - ${formatInstructions}
-        ${criteria.keywords ? `Incorporate keywords: ${criteria.keywords}.` : ''}
-        
-        Do NOT repeat these existing questions:
-        ${existingQuestionTexts || "None"}
-
-        Output Format:
-        ${jsonInstructions.trim()}
+        ${syllabusInstruction}
+        \n**CRITICAL INSTRUCTION: All generated text, including questions and answers, MUST be in the ${targetLanguage} language.**
+        \nCriteria:\n- Subject: ${criteria.subject}\n- Class: ${criteria.class}\n- Chapter: "${criteria.chapter || 'Various Topics'}"\n- Marks for each question: ${criteria.marks}\n- Difficulty: ${criteria.difficulty}
+        \nQuestion Style Guidelines:\n- **Variety is key.** Create a mix of questions that test different cognitive skills: some should test basic recall (e.g., 'What is...?'), others should require explanation (e.g., 'Explain why...'), and some should ask for analysis or comparison (e.g., 'Differentiate between...'). Use diverse sentence structures and avoid starting every question the same way.\n- ${getStyleGuideline(criteria.questionType)}
+        \nSpecific Instructions for this Request:\n- ${formatInstructions}\n${keywordInstructions ? `- ${keywordInstructions}` : ''}
+        \nIMPORTANT: Do NOT repeat any of the following questions that have been used before:\n${existingQuestionTexts.length > 0 ? existingQuestionTexts : "None"}
+        \nOutput Format:\n${jsonInstructions.trim()}
     `;
-    
     const result = await openAIChatCompletion(openAIApiKey, prompt, true, null, signal);
-    return { generatedQuestions: result.questions || [] };
+
+    if (!result || !Array.isArray(result.questions)) {
+        console.error("OpenAI did not return a valid array of questions:", result);
+        return { generatedQuestions: [] };
+    }
+
+    return { generatedQuestions: result.questions };
 };
 
-export const analyzeTestAttemptOpenAI = async (
-  questions: Question[],
-  studentAnswers: StudentAnswer[],
-  lang: Language,
-  openAIApiKey: string,
-  signal?: AbortSignal,
-): Promise<Analysis> => {
-    const detailedAttempt = questions.map(q => {
-        const studentAns = studentAnswers.find(sa => sa.questionId === q.id)?.answer || "Not Answered";
-        const isCorrect = q.answer && studentAns.trim().toLowerCase() === q.answer.trim().toLowerCase();
-        return `Question: ${q.text}\nChapter: ${q.chapter}\nCorrect Answer: ${q.answer}\nStudent's Answer: ${studentAns}\nResult: ${isCorrect ? 'Correct' : 'Incorrect'}\n---`;
-    }).join('\n');
-    
-    const prompt = `You are a helpful biology tutor. Analyze a student's test performance in ${languageMap[lang]}.
-    
-    Test Data:
-    ${detailedAttempt}
-    
-    Provide a concise analysis as a JSON object with three keys: "strengths", "weaknesses", and "summary".
-    - "strengths": An array of 2-3 strings describing specific strengths.
-    - "weaknesses": An array of 2-3 strings describing areas for improvement.
-    - "summary": A brief (1-2 sentences) overall summary.
-    
-    Return ONLY a single valid JSON object.
-    `;
-    return await openAIChatCompletion(openAIApiKey, prompt, true, null, signal) as Analysis;
+export const analyzeTestAttemptOpenAI = async (paper: Paper, studentAnswers: StudentAnswer[], lang: Language, openAIApiKey: string, signal?: AbortSignal): Promise<Analysis> => {
+    const subject = paper.subject || 'Biology';
+    const detailedAttempt = paper.questions.map(q => `Question: ${q.text}\nChapter: ${q.chapter}\nCorrect Answer: ${q.answer}\nStudent's Answer: ${studentAnswers.find(sa => sa.questionId === q.id)?.answer || "Not Answered"}\n---`).join('\n');
+    const prompt = `You are a helpful ${subject} tutor. Analyze a student's test performance in ${languageMap[lang]}.\nTest Data:\n${detailedAttempt}\nReturn ONLY a single valid JSON object with "strengths" (array of strings), "weaknesses" (array of strings), and "summary" (string). Do not nest it under any other key.`;
+    return await openAIChatCompletion(openAIApiKey, prompt, true, null, signal);
 };
 
-export const generateFlashcardsAIOpenAI = async (
-  chapter: string,
-  classNum: number,
-  count: number,
-  lang: Language,
-  openAIApiKey: string,
-  signal?: AbortSignal,
-): Promise<Flashcard[]> => {
-    const prompt = `You are a biology teacher creating study flashcards.
-    Generate ${count} flashcards for the topic "${chapter}" for Class ${classNum} in ${languageMap[lang]}.
-    Focus on key terms, definitions, and important concepts.
-
-    Output a valid JSON object with a single key "flashcards", which is an array of objects. Each object must have a "question" and "answer" key.
-    `;
+export const generateFlashcardsAIOpenAI = async (subject: string, chapter: string, classNum: number, count: number, lang: Language, openAIApiKey: string, signal?: AbortSignal): Promise<Flashcard[]> => {
+    const prompt = `Generate ${count} flashcards for ${subject}, Class ${classNum} on "${chapter}" in ${languageMap[lang]}. Output a valid JSON object with a single key "flashcards", which is an array of objects, each with a "question" and "answer" key.`;
     const result = await openAIChatCompletion(openAIApiKey, prompt, true, null, signal);
     return result.flashcards || [];
 };
 
-export const extractQuestionsFromImageAIOpenAI = async (
-  imageDataUrl: string,
-  classNum: number,
-  lang: Language,
-  openAIApiKey: string,
-  signal?: AbortSignal
-): Promise<Partial<Question>[]> => {
-    const prompt = `
-        You are an expert at analyzing images of exam papers. Extract all questions from the provided image.
-        For each question, identify its text. Try to infer the marks if they are mentioned near the question.
-        The content must be in the ${languageMap[lang]} language.
-        Return the result as a valid JSON object with a single key "questions". The value should be an array of objects, where each object has a "text" field (string) and an optional "marks" field (number).
-    `;
+export const extractQuestionsFromImageAIOpenAI = async (imageDataUrl: string, classNum: number, lang: Language, openAIApiKey: string, signal?: AbortSignal): Promise<Partial<Question>[]> => {
     const visionContent = [
-        { type: 'text', text: prompt },
-        { type: 'image_url', image_url: { url: imageDataUrl, detail: 'high' } }
+        { type: "text", text: `Extract all questions from the image of an exam paper for Class ${classNum} in ${languageMap[lang]}. Return a valid JSON object with a key "questions" containing an array of objects, each with "text" (string) and optional "marks" (number).` },
+        { type: "image_url", image_url: { url: imageDataUrl } }
     ];
-    const result = await openAIChatCompletion(openAIApiKey, prompt, true, visionContent, signal);
+    const result = await openAIChatCompletion(openAIApiKey, '', true, visionContent, signal);
     return result.questions || [];
+};
+
+export const suggestDiagramsAIOpenAI = async (subject: string, chapter: string, classNum: number, lang: Language, openAIApiKey: string, signal?: AbortSignal): Promise<DiagramSuggestion[]> => {
+    const prompt = `List the 3 most important diagrams for ${subject} for Class ${classNum} studying "${chapter}" in ${languageMap[lang]}. For each, provide its name, description, and an image generation prompt. Return a valid JSON object with a key "diagrams" which is an array of objects with "name", "description", and "image_prompt" keys.`;
+    const result = await openAIChatCompletion(openAIApiKey, prompt, true, null, signal);
+    return result.diagrams || [];
+};
+
+export const gradeDiagramAIOpenAI = async (subject: string, referenceImagePrompt: string, studentDrawingDataUrl: string, lang: Language, openAIApiKey: string, signal?: AbortSignal): Promise<DiagramGrade> => {
+    const referenceImageBase64 = await openAIImageGeneration(openAIApiKey, referenceImagePrompt, signal);
+    await new Promise(resolve => setTimeout(resolve, 1100)); // Rate limit buffer
+    
+    const visionContent = [
+        { type: "text", text: `You are an expert ${subject} teacher grading a student's diagram in ${languageMap[lang]}. The first image is the reference, the second is the student's. Evaluate accuracy, labeling, and neatness. Return a JSON object with "score" (number out of 10), "strengths" (array of strings), "areasForImprovement" (array of strings), and "feedback" (string). Do not nest it under any other key.` },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${referenceImageBase64}` } },
+        { type: "image_url", image_url: { url: studentDrawingDataUrl } }
+    ];
+    return await openAIChatCompletion(openAIApiKey, '', true, visionContent, signal);
+};
+
+export const answerDoubtAIOpenAI = async (classNum: number, lang: Language, openAIApiKey: string, text?: string, imageDataUrl?: string, signal?: AbortSignal): Promise<string> => {
+    const visionContent: any[] = [{ type: 'text', text: `You are a friendly tutor for a Class ${classNum} student. A student has a doubt in ${languageMap[lang]}. Explain clearly, using Markdown. Student's doubt: ${text || 'Please analyze the attached image.'}` }];
+    if (imageDataUrl) {
+        visionContent.push({ type: 'image_url', image_url: { url: imageDataUrl } });
+    }
+    return await openAIChatCompletion(openAIApiKey, '', false, visionContent, signal);
+};
+
+export const generateStudyGuideAIOpenAI = async (subject: string, chapter: string, classNum: number, topic: string, lang: Language, openAIApiKey: string, signal?: AbortSignal): Promise<string> => {
+    const prompt = `Create a concise study guide for a Class ${classNum} student on the "${topic}" from the ${subject} chapter "${chapter}" in ${languageMap[lang]}. Format it well with Markdown.`;
+    return await openAIChatCompletion(openAIApiKey, prompt, false, null, signal);
+};
+
+export const suggestPracticeSetsAIOpenAI = async (attempts: TestAttempt[], classNum: number, lang: Language, openAIApiKey: string, signal?: AbortSignal): Promise<PracticeSuggestion[]> => {
+    const weaknesses = [...new Set(attempts.flatMap(a => a.analysis?.weaknesses || []))];
+    if (weaknesses.length === 0) return [];
+    
+    const subject = attempts[0]?.paper?.subject || 'Biology';
+    const prompt = `You are an expert ${subject} tutor. A Class ${classNum} student has these weaknesses: \n- ${weaknesses.join('\n- ')}\nBased *only* on these, suggest up to 3 specific practice topics in ${languageMap[lang]}. Return a valid JSON object with a key "suggestions" which is an array of objects. Each object must have "chapter", "topic", and "reason" keys.`;
+    const result = await openAIChatCompletion(openAIApiKey, prompt, true, null, signal);
+    return result.suggestions || [];
 };
 
 export const extractQuestionsFromPdfAIOpenAI = async (
@@ -340,138 +327,18 @@ export const extractQuestionsFromPdfAIOpenAI = async (
     openAIApiKey: string,
     signal?: AbortSignal
 ): Promise<Partial<Question>[]> => {
-    // OpenAI's Chat Completions API doesn't directly support base64 PDF uploads in the same way Gemini does.
-    // This would require a third-party library or a more complex implementation.
-    // For now, we explicitly state it's not supported to avoid silent failures.
-    throw new Error("PDF question extraction is not supported via the OpenAI fallback at this time.");
+  // The current vision model API for OpenAI doesn't directly support PDF uploads in the same way Gemini does.
+  // This would require a more complex implementation (e.g., using Assistants API or converting PDF to images).
+  // For now, we'll indicate that this feature is not supported via the OpenAI fallback.
+  throw new Error("PDF processing is only available with a Gemini API Key and is not supported via the OpenAI fallback.");
 };
 
-export const suggestDiagramsAIOpenAI = async (
-  chapter: string,
-  classNum: number,
-  lang: Language,
-  openAIApiKey: string,
-  signal?: AbortSignal,
-): Promise<DiagramSuggestion[]> => {
-    const prompt = `
-        List the 3 most important diagrams for a Class ${classNum} student studying "${chapter}".
-        For each diagram, provide its name, a brief description, and a detailed prompt for an image generation AI.
-        The content must be in ${languageMap[lang]}.
-        Return a valid JSON object with a key "diagrams", containing an array of objects. Each object must have "name", "description", and "image_prompt" keys.
-    `;
-    const result = await openAIChatCompletion(openAIApiKey, prompt, true, null, signal);
-    return result.diagrams || [];
+export const answerTeacherDoubtAIOpenAI = async (classNum: number, lang: Language, openAIApiKey: string, text?: string, imageDataUrl?: string, signal?: AbortSignal): Promise<string> => {
+    const prompt = `You are an expert teaching assistant for a teacher of Class ${classNum}. The teacher has a query in ${languageMap[lang]}. Provide a clear, detailed, and pedagogically sound explanation suitable for a teacher. Use Markdown for formatting. Teacher's query: ${text || 'Please analyze the attached image.'}`;
+    const visionContent: any[] | null = imageDataUrl ? [ { type: 'text', text: prompt }, { type: 'image_url', image_url: { url: imageDataUrl } } ] : null;
+    return await openAIChatCompletion(openAIApiKey, visionContent ? '' : prompt, false, visionContent, signal);
 };
 
-export const gradeDiagramAIOpenAI = async (
-    referenceImagePrompt: string,
-    studentDrawingDataUrl: string,
-    lang: Language,
-    openAIApiKey: string,
-    signal?: AbortSignal,
-): Promise<DiagramGrade> => {
-    const referenceImageBase64 = await openAIImageGeneration(openAIApiKey, referenceImagePrompt, signal);
-    const referenceImageUrl = `data:image/png;base64,${referenceImageBase64}`;
-
-    const prompt = `
-        You are an expert biology teacher grading a student's diagram.
-        The first image is the correct reference diagram. The second is the student's drawing.
-        Evaluate the student's drawing on accuracy, labeling, and neatness.
-        Provide constructive feedback in ${languageMap[lang]}.
-        Return a single valid JSON object with "score" (number out of 10), "strengths" (array of strings), "areasForImprovement" (array of strings), and "feedback" (a summary string).
-    `;
-    const visionContent = [
-        { type: 'text', text: prompt },
-        { type: 'image_url', image_url: { url: referenceImageUrl } },
-        { type: 'image_url', image_url: { url: studentDrawingDataUrl } }
-    ];
-    return await openAIChatCompletion(openAIApiKey, prompt, true, visionContent, signal) as DiagramGrade;
-};
-
-export const answerDoubtAIOpenAI = async (
-    classNum: number,
-    lang: Language,
-    openAIApiKey: string,
-    text?: string,
-    imageDataUrl?: string,
-    signal?: AbortSignal,
-): Promise<string> => {
-    const prompt = `
-        You are a friendly biology tutor for a Class ${classNum} student.
-        A student has a doubt. Explain the concept clearly and concisely in ${languageMap[lang]}.
-        If it's a question, guide them step-by-step. Use Markdown for formatting.
-        The student's doubt is: ${text || 'Please analyze the attached image.'}
-    `;
-    const visionContent: any[] = [{ type: 'text', text: prompt }];
-    if (imageDataUrl) {
-        visionContent.push({ type: 'image_url', image_url: { url: imageDataUrl } });
-    }
-    return await openAIChatCompletion(openAIApiKey, prompt, false, visionContent, signal) as string;
-};
-
-export const answerTeacherDoubtAIOpenAI = async (
-    classNum: number,
-    lang: Language,
-    openAIApiKey: string,
-    text?: string,
-    imageDataUrl?: string,
-    signal?: AbortSignal,
-): Promise<string> => {
-    const prompt = `
-        You are an expert biology teaching assistant for a Class ${classNum} teacher.
-        A teacher has a query. Provide a clear, detailed, and pedagogically sound explanation suitable for a teacher. Use Markdown for formatting.
-        The content must be in ${languageMap[lang]}.
-        The teacher's query is: ${text || 'Please analyze the attached image.'}
-    `;
-    const visionContent: any[] = [{ type: 'text', text: prompt }];
-    if (imageDataUrl) {
-        visionContent.push({ type: 'image_url', image_url: { url: imageDataUrl } });
-    }
-    return await openAIChatCompletion(openAIApiKey, prompt, false, visionContent, signal) as string;
-};
-
-export const generateStudyGuideAIOpenAI = async (
-    chapter: string,
-    classNum: number,
-    topic: string,
-    lang: Language,
-    openAIApiKey: string,
-    signal?: AbortSignal,
-): Promise<string> => {
-    const prompt = `
-        You are a biology teacher creating a concise study guide for a Class ${classNum} student.
-        Generate a list of all important "${topic}" from the chapter "${chapter}".
-        The output should be clear, well-structured in Markdown format, and in the ${languageMap[lang]} language.
-    `;
-    return await openAIChatCompletion(openAIApiKey, prompt, false, null, signal) as string;
-};
-
-export const suggestPracticeSetsAIOpenAI = async (
-    attempts: TestAttempt[],
-    classNum: number,
-    lang: Language,
-    openAIApiKey: string,
-    signal?: AbortSignal,
-): Promise<PracticeSuggestion[]> => {
-    const weaknesses = attempts
-        .flatMap(a => a.analysis?.weaknesses || [])
-        .filter((value, index, self) => self.indexOf(value) === index);
-
-    if (weaknesses.length === 0) return [];
-    
-    const prompt = `
-        You are an expert biology tutor. A Class ${classNum} student has these weaknesses:
-        - ${weaknesses.join('\n- ')}
-
-        Based *only* on these weaknesses, suggest up to 3 specific practice topics.
-        The response must be in ${languageMap[lang]}.
-        Return a valid JSON object with a key "suggestions", containing an array of objects. Each object must have "chapter", "topic", and "reason" keys.
-    `;
-    const result = await openAIChatCompletion(openAIApiKey, prompt, true, null, signal);
-    return result.suggestions || [];
-};
-
-// FIX: Add the new function to serve as a fallback for text extraction.
 export const extractQuestionsFromTextAIOpenAI = async (
     text: string,
     classNum: number,
@@ -479,17 +346,16 @@ export const extractQuestionsFromTextAIOpenAI = async (
     openAIApiKey: string,
     signal?: AbortSignal
 ): Promise<Partial<Question>[]> => {
-    const prompt = `
-        You are an expert at analyzing text from exam papers. Extract all questions from the provided text.
-        For each question, identify its text. Try to infer the marks if they are mentioned near the question.
-        The content must be in the ${languageMap[lang]} language.
-        Return the result as a valid JSON object with a single key "questions". The value should be an array of objects, where each object has a "text" field (string) and an optional "marks" field (number).
-        
-        The text to analyze is:
-        ---
-        ${text}
-        ---
-    `;
+    const prompt = `You are an expert at analyzing text. Extract all distinct questions from the provided text from an exam paper. The paper is for Class ${classNum} and is in the ${languageMap[lang]} language.
+- For each question, identify its full text.
+- If marks are mentioned near a question, extract them.
+- Return the result as a valid JSON object with a key "questions" which is an array of objects. Each object must have a "text" (string) and may have an optional "marks" (number) field.
+
+Here is the text to analyze:
+---
+${text}
+---
+`;
     const result = await openAIChatCompletion(openAIApiKey, prompt, true, null, signal);
     return result.questions || [];
 };

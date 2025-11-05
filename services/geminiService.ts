@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { Question, Language, StudentAnswer, Analysis, Flashcard, DiagramSuggestion, DiagramGrade, TestAttempt, PracticeSuggestion } from '../types';
+import { Question, Language, StudentAnswer, Analysis, Flashcard, DiagramSuggestion, DiagramGrade, TestAttempt, PracticeSuggestion, Paper } from '../types';
 import { DEFAULT_CHAPTERS } from "../constants";
 import { 
     getChaptersOpenAI, 
@@ -14,7 +14,6 @@ import {
     suggestPracticeSetsAIOpenAI,
     extractQuestionsFromPdfAIOpenAI,
     answerTeacherDoubtAIOpenAI,
-    // FIX: Import the new text extraction fallback function.
     extractQuestionsFromTextAIOpenAI,
 } from './openaiService';
 import { supabase } from './supabaseClient';
@@ -115,7 +114,7 @@ const languageMap: Record<Language, string> = {
     en: 'English',
     bn: 'Bengali',
     hi: 'Hindi',
-    kn: 'Kannada',
+    ka: 'Kannada',
 };
 
 const getStyleGuideline = (questionType?: string): string => {
@@ -140,6 +139,7 @@ const getStyleGuideline = (questionType?: string): string => {
 export const generateQuestionsAI = async (
   criteria: {
     class: number;
+    subject: string;
     chapter: string;
     marks: number;
     difficulty: string;
@@ -183,16 +183,17 @@ export const generateQuestionsAI = async (
                 if (i > 0) await new Promise(resolve => setTimeout(resolve, 2000)); // Rate limit
                 
                 const textGenPrompt = `
-You are an expert biology teacher creating a question for an exam.
+You are an expert ${criteria.subject} teacher creating a question for an exam.
 Your task is to generate a single JSON object containing "questionText", "answerText", and "imagePrompt".
 
 **Instructions:**
-1.  **questionText**: Create a unique biology question based on the criteria below. This question MUST refer to a diagram (e.g., "Identify the part labeled 'X'...", "Describe the process shown in the diagram..."). Do NOT repeat questions from previous turns.
+1.  **questionText**: Create a unique ${criteria.subject} question based on the criteria below. This question MUST refer to a diagram (e.g., "Identify the part labeled 'X'...", "Describe the process shown in the diagram..."). Do NOT repeat questions from previous turns.
 2.  **answerText**: Provide a concise, correct answer to the question. ${!shouldGenerateAnswer ? 'This field should be an empty string if an answer is not required.' : ''}
 3.  **imagePrompt**: Write a clear and detailed prompt for an image generation AI. This prompt should describe the exact diagram needed to answer the question. It should be simple, biologically accurate, and include instructions for any necessary labels (e.g., "Label the nucleus with the letter 'A'.").
 4.  All generated text MUST be in the **${targetLanguage}** language.
 
 **Criteria for the Question:**
+- Subject: ${criteria.subject}
 - Class: ${criteria.class}
 - Topic: "${criteria.chapter}"
 - Difficulty: ${criteria.difficulty}
@@ -204,7 +205,7 @@ Return ONLY a single valid JSON object. Do not add any text before or after the 
                 const responseSchema: any = {
                     type: Type.OBJECT,
                     properties: {
-                        questionText: { type: Type.STRING, description: "The biology question that requires a diagram." },
+                        questionText: { type: Type.STRING, description: `The ${criteria.subject} question that requires a diagram.` },
                         imagePrompt: { type: Type.STRING, description: "A detailed prompt for an AI to generate the necessary diagram." },
                     },
                     required: ["questionText", "imagePrompt"],
@@ -278,12 +279,12 @@ Return ONLY a single valid JSON object. Do not add any text before or after the 
         const keywordInstructions = criteria.keywords ? `The questions must incorporate or be related to the following keywords: ${criteria.keywords}.` : '';
         const boardName = criteria.class >= 11 ? "WBCHSE" : "WBBSE";
         const boardFullName = criteria.class >= 11 ? "West Bengal Council of Higher Secondary Education (WBCHSE)" : "West Bengal Board of Secondary Education (WBBSE)";
-        const syllabusInstruction = criteria.wbbseSyllabusOnly ? `You are an expert in creating biology question papers for the ${boardFullName} curriculum, specifically for Bengali Medium school students.\nYour task is to generate ${criteria.count} unique, high-quality questions based on the criteria below.\n**CRITICAL RULE: The content of all questions and answers MUST strictly adhere to the topics, scope, and depth of the official ${boardName} Biology syllabus for the specified class. DO NOT include any content from other educational boards like CBSE, ICSE, etc.**` : `You are an expert in creating biology question papers. Your task is to generate ${criteria.count} unique, high-quality questions based on the criteria below.`;
+        const syllabusInstruction = criteria.wbbseSyllabusOnly ? `You are an expert in creating question papers for the ${boardFullName} curriculum, specifically for Bengali Medium school students, for the subject of ${criteria.subject}.\nYour task is to generate ${criteria.count} unique, high-quality questions based on the criteria below.\n**CRITICAL RULE: The content of all questions and answers MUST strictly adhere to the topics, scope, and depth of the official ${boardName} ${criteria.subject} syllabus for the specified class. DO NOT include any content from other educational boards like CBSE, ICSE, etc.**` : `You are an expert in creating question papers for the subject of ${criteria.subject}. Your task is to generate ${criteria.count} unique, high-quality questions based on the criteria below.`;
 
         const prompt = `
             ${syllabusInstruction}
             \n**CRITICAL INSTRUCTION: All generated text, including questions and answers, MUST be in the ${targetLanguage} language.**
-            \nCriteria:\n- Class: ${criteria.class}\n- Chapter: "${criteria.chapter || 'Various Topics'}"\n- Marks for each question: ${criteria.marks}\n- Difficulty: ${criteria.difficulty}
+            \nCriteria:\n- Subject: ${criteria.subject}\n- Class: ${criteria.class}\n- Chapter: "${criteria.chapter || 'Various Topics'}"\n- Marks for each question: ${criteria.marks}\n- Difficulty: ${criteria.difficulty}
             \nQuestion Style Guidelines:\n- **Variety is key.** Create a mix of questions that test different cognitive skills: some should test basic recall (e.g., 'What is...?'), others should require explanation (e.g., 'Explain why...'), and some should ask for analysis or comparison (e.g., 'Differentiate between...'). Use diverse sentence structures and avoid starting every question the same way.\n- ${getStyleGuideline(criteria.questionType)}
             \nSpecific Instructions for this Request:\n- ${formatInstructions}\n${keywordInstructions ? `- ${keywordInstructions}` : ''}
             \nIMPORTANT: Do NOT repeat any of the following questions that have been used before:\n${existingQuestionTexts.length > 0 ? existingQuestionTexts : "None"}
@@ -441,7 +442,7 @@ export const getChaptersAI = async (
   userGeminiApiKey?: string,
   userOpenAIApiKey?: string,
 ): Promise<string[]> => {
-  const cacheKey = `${board}-${classNum}-${subject}-${lang}`;
+  const cacheKey = `${board}-${classNum}-${subject}-${lang}-${semester || 'all'}`;
   const localCacheExpiry = 1000 * 60 * 60 * 24 * 7; // 1 week for localStorage
   const dbCacheStalePeriod = 1000 * 60 * 60 * 24 * 90; // 90 days for Supabase
 
@@ -465,7 +466,22 @@ export const getChaptersAI = async (
   };
 
   try {
-    const { data: dbData, error: dbError } = await supabase.from('chapters').select('chapters_list, updated_at').eq('board', board).eq('class', classNum).eq('lang', lang).eq('subject', subject).single();
+    const query = supabase
+      .from('chapters')
+      .select('chapters_list, updated_at')
+      .eq('board', board)
+      .eq('class', classNum)
+      .eq('lang', lang)
+      .eq('subject', subject);
+
+    if (semester) {
+      query.eq('semester', semester);
+    } else {
+      query.is('semester', null);
+    }
+    
+    const { data: dbData, error: dbError } = await query.single();
+    
     if (dbError && dbError.code !== 'PGRST116') { console.warn("Error fetching chapters from Supabase cache:", dbError); }
     if (dbData?.chapters_list?.length > 0) {
       const isStale = (Date.now() - new Date(dbData.updated_at).getTime()) > dbCacheStalePeriod;
@@ -514,7 +530,15 @@ Return ONLY a single valid JSON array of strings, where each string is a chapter
   
   if (chaptersFromAI && chaptersFromAI.length > 0) {
     updateLocalCache(chaptersFromAI);
-    supabase.from('chapters').upsert({ board: board, class: classNum, lang: lang, subject: subject, chapters_list: chaptersFromAI, updated_at: new Date().toISOString() }, { onConflict: 'board, class, lang, subject' }).then(({ error: upsertError }) => { if (upsertError) { console.warn("Failed to cache chapters in Supabase:", upsertError); } });
+    supabase.from('chapters').upsert({ 
+        board: board, 
+        class: classNum, 
+        lang: lang, 
+        subject: subject,
+        semester: semester || null,
+        chapters_list: chaptersFromAI, 
+        updated_at: new Date().toISOString() 
+    }, { onConflict: 'board, class, lang, subject, semester' }).then(({ error: upsertError }) => { if (upsertError) { console.warn("Failed to cache chapters in Supabase:", upsertError); } });
     return chaptersFromAI;
   }
 
@@ -566,33 +590,34 @@ const executeWithFallbacks = async <T>(
     throw lastError || new Error(`${featureName} failed with all available keys. Please check your keys in Settings.`);
 };
 
-export const analyzeTestAttempt = async (questions: Question[], studentAnswers: StudentAnswer[], lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<Analysis> => {
+export const analyzeTestAttempt = async (paper: Paper, studentAnswers: StudentAnswer[], lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<Analysis> => {
     const providers = createProviderList(userApiKey, userOpenApiKey);
+    const subject = paper.subject || 'Biology';
     return executeWithFallbacks(
         providers,
         async (ai) => {
-            const detailedAttempt = questions.map(q => `Question: ${q.text}\nChapter: ${q.chapter}\nCorrect Answer: ${q.answer}\nStudent's Answer: ${studentAnswers.find(sa => sa.questionId === q.id)?.answer || "Not Answered"}\n---`).join('\n');
-            const prompt = `You are a helpful biology tutor. Analyze a student's test performance in ${languageMap[lang]}.\nTest Data:\n${detailedAttempt}\nReturn ONLY a single valid JSON object with "strengths" (array of strings), "weaknesses" (array of strings), and "summary" (string).`;
+            const detailedAttempt = paper.questions.map(q => `Question: ${q.text}\nChapter: ${q.chapter}\nCorrect Answer: ${q.answer}\nStudent's Answer: ${studentAnswers.find(sa => sa.questionId === q.id)?.answer || "Not Answered"}\n---`).join('\n');
+            const prompt = `You are a helpful ${subject} tutor. Analyze a student's test performance in ${languageMap[lang]}.\nTest Data:\n${detailedAttempt}\nReturn ONLY a single valid JSON object with "strengths" (array of strings), "weaknesses" (array of strings), and "summary" (string).`;
             const responseSchema = { type: Type.OBJECT, properties: { strengths: { type: Type.ARRAY, items: { type: Type.STRING } }, weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } }, summary: { type: Type.STRING } }, required: ["strengths", "weaknesses", "summary"] };
             const response = await generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } });
             return JSON.parse(response.text.trim());
         },
-        (apiKey) => analyzeTestAttemptOpenAI(questions, studentAnswers, lang, apiKey),
+        (apiKey) => analyzeTestAttemptOpenAI(paper, studentAnswers, lang, apiKey),
         "Test Analysis"
     );
 };
 
-export const generateFlashcardsAI = (chapter: string, classNum: number, count: number, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<Flashcard[]> => {
+export const generateFlashcardsAI = (subject: string, chapter: string, classNum: number, count: number, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<Flashcard[]> => {
     const providers = createProviderList(userApiKey, userOpenApiKey);
     return executeWithFallbacks(
         providers,
         async (ai) => {
-            const prompt = `Generate ${count} flashcards for Class ${classNum} on "${chapter}" in ${languageMap[lang]}. Output a valid JSON array of objects, each with a "question" and "answer" key.`;
+            const prompt = `Generate ${count} flashcards for ${subject}, Class ${classNum} on "${chapter}" in ${languageMap[lang]}. Output a valid JSON array of objects, each with a "question" and "answer" key.`;
             const responseSchema = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { question: { type: Type.STRING }, answer: { type: Type.STRING } }, required: ["question", "answer"] } };
             const response = await generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } });
             return JSON.parse(response.text.trim());
         },
-        (apiKey) => generateFlashcardsAIOpenAI(chapter, classNum, count, lang, apiKey),
+        (apiKey) => generateFlashcardsAIOpenAI(subject, chapter, classNum, count, lang, apiKey),
         "Flashcard Generation"
     );
 };
@@ -708,7 +733,6 @@ export const extractQuestionsFromPdfAI = async (
     throw lastError || new Error("PDF Question Extraction failed with all available Gemini keys. The file might be too complex, corrupted, or the service may be temporarily unavailable. Please try again later.");
 };
 
-// FIX: Add the missing extractQuestionsFromTextAI function.
 export const extractQuestionsFromTextAI = (
     text: string,
     classNum: number,
@@ -766,22 +790,22 @@ ${text}
     );
 };
 
-export const suggestDiagramsAI = (chapter: string, classNum: number, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<DiagramSuggestion[]> => {
+export const suggestDiagramsAI = (subject: string, chapter: string, classNum: number, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<DiagramSuggestion[]> => {
     const providers = createProviderList(userApiKey, userOpenApiKey);
     return executeWithFallbacks(
         providers,
         async (ai) => {
-            const prompt = `List the 3 most important diagrams for Class ${classNum} studying "${chapter}" in ${languageMap[lang]}. For each, provide its name, description, and an image generation prompt. Return a valid JSON array of objects with "name", "description", and "image_prompt" keys.`;
+            const prompt = `List the 3 most important diagrams for ${subject} for Class ${classNum} studying "${chapter}" in ${languageMap[lang]}. For each, provide its name, description, and an image generation prompt. Return a valid JSON array of objects with "name", "description", and "image_prompt" keys.`;
             const responseSchema = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, description: { type: Type.STRING }, image_prompt: { type: Type.STRING } }, required: ["name", "description", "image_prompt"] } };
             const response = await generateWithRetry(ai, { model: 'gemini-2.5-pro', contents: prompt, config: { responseMimeType: "application/json", responseSchema } });
             return JSON.parse(response.text.trim());
         },
-        (apiKey) => suggestDiagramsAIOpenAI(chapter, classNum, lang, apiKey),
+        (apiKey) => suggestDiagramsAIOpenAI(subject, chapter, classNum, lang, apiKey),
         "Diagram Suggestion"
     );
 };
 
-export const gradeDiagramAI = (referenceImagePrompt: string, studentDrawingDataUrl: string, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<DiagramGrade> => {
+export const gradeDiagramAI = (subject: string, referenceImagePrompt: string, studentDrawingDataUrl: string, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<DiagramGrade> => {
     const providers = createProviderList(userApiKey, userOpenApiKey);
     return executeWithFallbacks(
         providers,
@@ -792,12 +816,12 @@ export const gradeDiagramAI = (referenceImagePrompt: string, studentDrawingDataU
             await sleep(1100);
             const studentImageMimeType = studentDrawingDataUrl.split(';')[0].split(':')[1];
             const studentImageBase64 = studentDrawingDataUrl.split(',')[1];
-            const prompt = `You are an expert biology teacher grading a student's diagram in ${languageMap[lang]}. The first image is the reference, the second is the student's. Evaluate accuracy, labeling, and neatness. Return a JSON object with "score" (number), "strengths" (array of strings), "areasForImprovement" (array of strings), and "feedback" (string).`;
+            const prompt = `You are an expert ${subject} teacher grading a student's diagram in ${languageMap[lang]}. The first image is the reference, the second is the student's. Evaluate accuracy, labeling, and neatness. Return a JSON object with "score" (number), "strengths" (array of strings), "areasForImprovement" (array of strings), and "feedback" (string).`;
             const responseSchema = { type: Type.OBJECT, properties: { score: { type: Type.NUMBER }, strengths: { type: Type.ARRAY, items: { type: Type.STRING } }, areasForImprovement: { type: Type.ARRAY, items: { type: Type.STRING } }, feedback: { type: Type.STRING } }, required: ["score", "strengths", "areasForImprovement", "feedback"] };
             const response = await generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: { parts: [{ text: prompt }, { inlineData: { mimeType: 'image/png', data: referenceImageBase64 } }, { inlineData: { mimeType: studentImageMimeType, data: studentImageBase64 } }] }, config: { responseMimeType: "application/json", responseSchema } });
             return JSON.parse(response.text.trim());
         },
-        (apiKey) => gradeDiagramAIOpenAI(referenceImagePrompt, studentDrawingDataUrl, lang, apiKey),
+        (apiKey) => gradeDiagramAIOpenAI(subject, referenceImagePrompt, studentDrawingDataUrl, lang, apiKey),
         "Diagram Grading"
     );
 };
@@ -807,7 +831,7 @@ export const answerDoubtAI = (classNum: number, lang: Language, text?: string, i
     return executeWithFallbacks(
         providers,
         async (ai) => {
-            const parts: any[] = [{ text: `You are a friendly biology tutor for a Class ${classNum} student. A student has a doubt in ${languageMap[lang]}. Explain clearly, using Markdown. Student's doubt: ${text || 'Please analyze the attached image.'}` }];
+            const parts: any[] = [{ text: `You are a friendly tutor for a Class ${classNum} student. A student has a doubt in ${languageMap[lang]}. Explain clearly, using Markdown. Student's doubt: ${text || 'Please analyze the attached image.'}` }];
             if (imageDataUrl) { parts.push({ inlineData: { mimeType: imageDataUrl.split(';')[0].split(':')[1], data: imageDataUrl.split(',')[1] } }); }
             const response = await generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: { parts } });
             return response.text;
@@ -822,7 +846,7 @@ export const answerTeacherDoubtAI = (classNum: number, lang: Language, text?: st
     return executeWithFallbacks(
         providers,
         async (ai) => {
-            const prompt = `You are an expert biology teaching assistant for a Class ${classNum} teacher. A teacher has a query in ${languageMap[lang]}. Provide a clear, detailed, and pedagogically sound explanation suitable for a teacher. Use Markdown for formatting. Teacher's query: ${text || 'Please analyze the attached image.'}`;
+            const prompt = `You are an expert teaching assistant for a teacher of Class ${classNum}. The teacher has a query in ${languageMap[lang]}. Provide a clear, detailed, and pedagogically sound explanation suitable for a teacher. Use Markdown for formatting. Teacher's query: ${text || 'Please analyze the attached image.'}`;
             const parts: any[] = [{ text: prompt }];
             if (imageDataUrl) { 
                 const mimeType = imageDataUrl.split(';')[0].split(':')[1];
@@ -837,16 +861,16 @@ export const answerTeacherDoubtAI = (classNum: number, lang: Language, text?: st
     );
 };
 
-export const generateStudyGuideAI = (chapter: string, classNum: number, topic: string, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<string> => {
+export const generateStudyGuideAI = (subject: string, chapter: string, classNum: number, topic: string, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<string> => {
     const providers = createProviderList(userApiKey, userOpenApiKey);
     return executeWithFallbacks(
         providers,
         async (ai) => {
-            const prompt = `Create a concise study guide for a Class ${classNum} student on the "${topic}" from the chapter "${chapter}" in ${languageMap[lang]}. Format it well with Markdown.`;
+            const prompt = `Create a concise study guide for a Class ${classNum} student on the "${topic}" from the ${subject} chapter "${chapter}" in ${languageMap[lang]}. Format it well with Markdown.`;
             const response = await generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt });
             return response.text;
         },
-        (apiKey) => generateStudyGuideAIOpenAI(chapter, classNum, topic, lang, apiKey),
+        (apiKey) => generateStudyGuideAIOpenAI(subject, chapter, classNum, topic, lang, apiKey),
         "Study Guide Generation"
     );
 };
@@ -856,10 +880,12 @@ export const suggestPracticeSetsAI = (attempts: TestAttempt[], classNum: number,
     const weaknesses = [...new Set(attempts.flatMap(a => a.analysis?.weaknesses || []))];
     if (weaknesses.length === 0) return Promise.resolve([]);
 
+    const subject = attempts[0]?.paper?.subject || 'Biology';
+
     return executeWithFallbacks(
         providers,
         async (ai) => {
-            const prompt = `You are an expert biology tutor. A Class ${classNum} student has these weaknesses: \n- ${weaknesses.join('\n- ')}\nBased *only* on these, suggest up to 3 specific practice topics in ${languageMap[lang]}. Return a valid JSON array of objects. Each object must have "chapter", "topic", and "reason" keys.`;
+            const prompt = `You are an expert ${subject} tutor. A Class ${classNum} student has these weaknesses: \n- ${weaknesses.join('\n- ')}\nBased *only* on these, suggest up to 3 specific practice topics in ${languageMap[lang]}. Return a valid JSON array of objects. Each object must have "chapter", "topic", and "reason" keys.`;
             const responseSchema = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { chapter: { type: Type.STRING }, topic: { type: Type.STRING }, reason: { type: Type.STRING } }, required: ["chapter", "topic", "reason"] } };
             const response = await generateWithRetry(ai, { model: 'gemini-2.5-pro', contents: prompt, config: { responseMimeType: "application/json", responseSchema } });
             return JSON.parse(response.text.trim());

@@ -39,6 +39,7 @@ const NOTO_SANS_DEVANAGARI_URL = 'https://raw.githubusercontent.com/google/fonts
 const NOTO_SANS_KANNADA_URL = 'https://raw.githubusercontent.com/google/fonts/main/apache/notosanskannada/NotoSansKannada-Regular.ttf';
 
 
+
 // In-memory cache to avoid re-fetching the font on every PDF export.
 let bengaliFontCache: string | null = null;
 let devanagariFontCache: string | null = null;

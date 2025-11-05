@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { Language } from '../types';
 
@@ -7,83 +6,77 @@ interface LanguageSelectorProps {
   onLangChange: (lang: Language) => void;
 }
 
-const languageOptions: { code: Language; name: string }[] = [
-  { code: 'en', name: 'English' },
-  { code: 'bn', name: 'বাংলা' },
-  { code: 'hi', name: 'हिन्दी' },
-  { code: 'kn', name: 'ಕನ್ನಡ' },
+const languageOptions: { code: Language; name: string; fontClass: string }[] = [
+  { code: 'en', name: 'English', fontClass: '' },
+  { code: 'bn', name: 'বাংলা', fontClass: 'font-noto-bengali' },
+  { code: 'hi', name: 'हिन्दी', fontClass: 'font-noto-devanagari' },
+  { code: 'ka', name: 'ಕನ್ನಡ', fontClass: 'font-noto-kannada' },
 ];
-
-const GlobeIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m0 0a9 9 0 019-9m-9 9a9 9 0 009 9" />
-    </svg>
-);
-
-const ChevronDownIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-    </svg>
-);
-
 
 const LanguageSelector: React.FC<LanguageSelectorProps> = ({ lang, onLangChange }) => {
   const [isOpen, setIsOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
+    function handleClickOutside(event: MouseEvent) {
       if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
         setIsOpen(false);
       }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, []);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [wrapperRef]);
 
-  const handleSelect = (selectedLang: Language) => {
-    onLangChange(selectedLang);
+  const handleSelect = (newLang: Language) => {
+    onLangChange(newLang);
     setIsOpen(false);
   };
 
-  const currentLanguageCode = lang.toUpperCase();
-
   return (
-    <div ref={wrapperRef} className="relative">
+    <div className="relative" ref={wrapperRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 bg-slate-100/50 border border-slate-200/80 rounded-lg px-3 py-2 shadow-inner hover:bg-slate-200/60 transition-colors"
-        aria-haspopup="true"
-        aria-expanded={isOpen}
+        className="bg-slate-100/50 border border-slate-200/80 rounded-lg px-3 py-2 shadow-inner flex items-center transition-colors hover:bg-slate-200/50"
       >
-        <GlobeIcon />
-        <span className="font-mono text-sm font-semibold tracking-wider animate-text-color-cycle">{currentLanguageCode}</span>
-        <ChevronDownIcon />
+        <span className="font-mono text-sm font-semibold tracking-wider animate-text-color-cycle">
+          {lang.toUpperCase()}
+        </span>
+        <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ml-1.5 text-slate-500 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+          <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+        </svg>
       </button>
 
       {isOpen && (
-        <div
-          className="absolute top-full right-0 mt-2 w-36 bg-white/80 backdrop-blur-lg rounded-lg shadow-lg border border-slate-200 overflow-hidden z-50"
-          role="menu"
-        >
-          {languageOptions.map(({ code, name }) => (
-            <button
-              key={code}
-              onClick={() => handleSelect(code)}
-              className={`w-full text-left px-4 py-2 text-sm font-medium transition-colors ${
-                lang === code
-                  ? 'bg-indigo-50 text-indigo-700'
-                  : 'text-slate-700 hover:bg-indigo-50'
-              }`}
-              role="menuitem"
-            >
-              {name}
-            </button>
-          ))}
+        <div className="absolute top-full right-0 mt-2 w-40 bg-white rounded-lg shadow-lg border border-slate-200 z-50 overflow-hidden animate-fade-in-down">
+          <ul>
+            {languageOptions.map(option => (
+              <li key={option.code}>
+                <button
+                  onClick={() => handleSelect(option.code)}
+                  className={`w-full text-left px-4 py-2.5 text-sm hover:bg-slate-100 ${option.fontClass} ${lang === option.code ? 'font-bold text-indigo-600' : 'text-slate-700'}`}
+                >
+                  {option.name}
+                </button>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
+       <style>{`
+        @keyframes fade-in-down {
+          0% {
+            opacity: 0;
+            transform: translateY(-10px);
+          }
+          100% {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        .animate-fade-in-down {
+          animation: fade-in-down 0.2s ease-out;
+        }
+      `}</style>
     </div>
   );
 };

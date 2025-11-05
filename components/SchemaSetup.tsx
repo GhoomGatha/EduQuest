@@ -135,6 +135,7 @@ ALTER TABLE public.papers ADD COLUMN IF NOT EXISTS grounding_sources jsonb;
 ALTER TABLE public.papers ADD COLUMN IF NOT EXISTS data_urls text[];
 ALTER TABLE public.papers ADD COLUMN IF NOT EXISTS file_types text[];
 ALTER TABLE public.papers ADD COLUMN IF NOT EXISTS board text;
+ALTER TABLE public.papers ADD COLUMN IF NOT EXISTS subject text;
 
 
 -- Enable RLS for papers and create policy
@@ -167,13 +168,15 @@ CREATE TABLE IF NOT EXISTS public.chapters (
   updated_at timestamptz DEFAULT now()
 );
 
--- Add 'subject' column for better caching granularity (for migrations)
+-- Add 'subject' and 'semester' columns for better caching (for migrations)
 ALTER TABLE public.chapters ADD COLUMN IF NOT EXISTS subject text;
+ALTER TABLE public.chapters ADD COLUMN IF NOT EXISTS semester text;
 
--- Update the unique constraint to include subject. This handles both new and existing tables.
--- It's safe to drop if it doesn't exist.
+
+-- Update the unique constraint to include subject and semester.
+-- This is idempotent and handles both new and existing tables.
 ALTER TABLE public.chapters DROP CONSTRAINT IF EXISTS chapters_unique_constraint;
-ALTER TABLE public.chapters ADD CONSTRAINT chapters_unique_constraint UNIQUE (board, class, lang, subject);
+ALTER TABLE public.chapters ADD CONSTRAINT chapters_unique_constraint UNIQUE (board, class, lang, subject, semester);
 
 
 -- Enable RLS for chapters and create policies

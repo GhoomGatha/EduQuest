@@ -3,17 +3,15 @@
 import React, { useState, useEffect, useCallback, useRef, lazy, Suspense, useMemo } from 'react';
 import { Question, Paper, Tab, Language, Profile, QuestionSource, Difficulty, Semester, UploadProgress, TutorSession } from './types';
 import { t } from './utils/localization';
-import { TABS, LOCAL_STORAGE_KEY } from './constants';
+import { TABS, LOCAL_STORAGE_KEY, API_KEY_STORAGE_KEY, LANGUAGE_STORAGE_KEY, OPENAI_API_KEY_STORAGE_KEY } from './constants';
 import Modal from './components/Modal';
 import QuestionForm from './components/QuestionForm';
 import { useAuth } from './hooks/useAuth';
 import { supabase } from './services/supabaseClient';
 import LoadingSpinner from './components/LoadingSpinner';
 import SecretMessageModal from './components/SecretMessageModal';
-import { OPENAI_API_KEY_STORAGE_KEY } from './services/openaiService';
 import LiveClock from './components/LiveClock';
 import LanguageSelector from './components/LanguageSelector';
-// FIX: Import the newly created extractQuestionsFromTextAI function.
 import { extractQuestionsFromImageAI, extractQuestionsFromPdfAI, extractQuestionsFromTextAI } from './services/geminiService';
 
 const QuestionBank = lazy(() => import('./components/QuestionBank'));
@@ -22,8 +20,7 @@ const AITutor = lazy(() => import('./components/AITutor'));
 const ExamArchive = lazy(() => import('./components/ExamArchive'));
 const Settings = lazy(() => import('./components/Settings'));
 
-const API_KEY_STORAGE_KEY = 'eduquest_user_api_key';
-const LANGUAGE_STORAGE_KEY = 'eduquest_lang';
+const LAST_TEACHER_TAB_KEY = 'eduquest_last_teacher_tab';
 
 const tabIconAnimations: Record<Tab, string> = {
   bank: 'animate-glow',
@@ -84,9 +81,18 @@ interface TeacherAppProps {
     showToast: (message: string, type?: 'success' | 'error') => void;
 }
 
+const getFontClassForLang = (language: Language): string => {
+    switch (language) {
+        case 'bn': return 'font-noto-bengali';
+        case 'hi': return 'font-noto-devanagari';
+        case 'ka': return 'font-noto-kannada';
+        default: return '';
+    }
+};
+
 const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
   const { session, profile, setProfile } = useAuth();
-  const [activeTab, setActiveTab] = useState<Tab>('ai_tutor');
+  const [activeTab, setActiveTab] = useState<Tab>(() => (localStorage.getItem(LAST_TEACHER_TAB_KEY) as Tab) || 'ai_tutor');
   const [lang, setLang] = useState<Language>('en');
   const [questions, setQuestions] = useState<Question[]>([]);
   const [papers, setPapers] = useState<Paper[]>([]);
@@ -124,9 +130,13 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
   }, [questions, papers]);
 
   useEffect(() => {
+    localStorage.setItem(LAST_TEACHER_TAB_KEY, activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
     const updateSessionInfo = () => {
         const last = localStorage.getItem('eduquest_last_login');
-        const current = localStorage.getItem('eduquest_current_session_start');
+        const current = sessionStorage.getItem('eduquest_current_session_start');
         setSessionInfo({
             lastLogin: last ? new Date(last).toLocaleString() : 'N/A',
             currentSessionStart: current ? new Date(current).toLocaleString() : 'N/A'
@@ -288,6 +298,11 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
 
   useEffect(() => {
     localStorage.setItem(LANGUAGE_STORAGE_KEY, lang);
+    document.body.classList.remove('font-noto-bengali', 'font-noto-devanagari', 'font-noto-kannada');
+    const fontClass = getFontClassForLang(lang);
+    if (fontClass) {
+        document.body.classList.add(fontClass);
+    }
   }, [lang]);
 
   const handleAddQuestionClick = () => {
@@ -336,7 +351,6 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
             return;
         }
 
-        // FIX: Await the async getPublicUrl call and add a null check for robustness.
         const { data: urlData } = supabase.storage.from('question_images').getPublicUrl(filePath);
         if (!urlData?.publicUrl) {
             showToast('Error getting image public URL.', 'error');
@@ -346,7 +360,6 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
     }
 
     if (editingQuestion) {
-// FIX: The original destructuring was likely confusing the compiler. Splitting it into two steps for clarity and to avoid the "Initializer provides no value" error.
       const questionWithUser = { ...finalQuestionData, user_id: session.user.id };
       const { id, ...questionToUpdate } = questionWithUser;
       const { data, error } = await supabase.from('questions').update(questionToUpdate).eq('id', finalQuestionData.id).select();
@@ -357,13 +370,12 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
         showToast(t('questionUpdated', lang));
       }
     } else {
-// FIX: The original destructuring was likely confusing the compiler. Splitting it into two steps for clarity and to avoid the "Initializer provides no value" error.
       const questionWithUser = { ...finalQuestionData, user_id: session.user.id };
       const { id, ...questionToInsert } = questionWithUser;
       const { data, error } = await supabase.from('questions').insert(questionToInsert).select();
       if (error || !data) {
         showToast('Error adding question.', 'error');
-        console.error("Error adding question:", error)
+        console.error("Error adding question:", error);
       } else {
         setQuestions(prev => [data[0], ...prev]);
         showToast(t('questionAdded', lang));
@@ -426,7 +438,6 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
                                 const filePath = `${session.user.id}/${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
                                 const { error: uploadError } = await supabase.storage.from('question_images').upload(filePath, blob);
                                 if (uploadError) throw new Error(`Image upload failed: ${uploadError.message}`);
-                                // FIX: getPublicUrl is synchronous and does not need to be awaited. A null check is added for safety.
                                 const { data: urlData } = supabase.storage.from('question_images').getPublicUrl(filePath);
                                 if (!urlData?.publicUrl) {
                                     throw new Error('Could not get public URL for image.');
@@ -459,6 +470,7 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
             class: paper.class,
             semester: paper.semester,
             board: paper.board || null,
+            subject: paper.subject || null,
             source: paper.source,
             file_types: paper.file_types || null,
             text: paper.text || null,
@@ -739,7 +751,6 @@ const handleArchiveFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, f
                 const storageFilePath = `${session.user.id}/${paperId}/${file.name}`;
                 const { error } = await supabase.storage.from('papers').upload(storageFilePath, file, { upsert: true });
                 if (error) throw error;
-                // FIX: getPublicUrl is synchronous and does not need to be awaited. A null check is added for robustness.
                 const { data: urlData } = supabase.storage.from('papers').getPublicUrl(storageFilePath);
                 if (urlData?.publicUrl) {
                     uploadedFileUrl = urlData.publicUrl;
@@ -841,11 +852,15 @@ const handleCsvUpload = async (file: File) => {
 
   const handleClear = async () => {
     if(!session?.user) return;
-    await supabase.from('questions').delete().eq('user_id', session.user.id);
-    await supabase.from('papers').delete().eq('user_id', session.user.id);
-    setQuestions([]);
-    setPapers([]);
-    showToast(t('dataCleared', lang), 'error');
+    if(window.confirm(t('clearWarning', lang))) {
+      await supabase.from('questions').delete().eq('user_id', session.user.id);
+      await supabase.from('papers').delete().eq('user_id', session.user.id);
+      await supabase.from('tutor_sessions').delete().eq('user_id', session.user.id);
+      setQuestions([]);
+      setPapers([]);
+      setTutorSessions([]);
+      showToast(t('dataCleared', lang), 'error');
+    }
   };
   
   const handleSaveApiKey = (key: string) => {
@@ -888,7 +903,6 @@ const handleCsvUpload = async (file: File) => {
 
             if (uploadError) throw uploadError;
 
-            // FIX: Add a null check for urlData to prevent runtime errors if the URL is not retrieved.
             const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(filePath);
             if (urlData?.publicUrl) {
                 newAvatarUrl = `${urlData.publicUrl}?t=${new Date().getTime()}`;

@@ -15,7 +15,7 @@ const Footer: React.FC<FooterProps> = ({ lang }) => {
     useEffect(() => {
         const updateSessionInfo = () => {
             const last = localStorage.getItem('eduquest_last_login');
-            const current = localStorage.getItem('eduquest_current_session_start');
+            const current = sessionStorage.getItem('eduquest_current_session_start');
             setSessionInfo({
                 lastLogin: last ? new Date(last).toLocaleString() : 'N/A',
                 currentSessionStart: current ? new Date(current).toLocaleString() : 'N/A'

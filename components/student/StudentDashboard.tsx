@@ -7,7 +7,7 @@ import LoadingSpinner from '../LoadingSpinner';
 import { supabase } from '../../services/supabaseClient';
 import Modal from '../Modal';
 import { loadScript } from '../../utils/scriptLoader';
-import { getBengaliFontBase64, getDevanagariFontBase64 } from '../../utils/fontData';
+import { getBengaliFontBase64, getDevanagariFontBase64, getKannadaFontBase64 } from '../../utils/fontData';
 
 // --- Start of Embedded MarkdownRenderer Component ---
 declare global {
@@ -35,7 +35,7 @@ const MarkdownRenderer: React.FC<{ content: string }> = ({ content }) => {
 const FlashcardViewer: React.FC<{
     flashcards: Flashcard[];
     title: string;
-    lang: 'en' | 'bn' | 'hi';
+    lang: 'en' | 'bn' | 'hi' | 'ka';
 }> = ({ flashcards, title, lang }) => {
     const [currentIndex, setCurrentIndex] = useState(0);
     const [isFlipped, setIsFlipped] = useState(false);
@@ -69,7 +69,7 @@ const FlashcardViewer: React.FC<{
 interface StudentDashboardProps {
     papers: Paper[];
     attempts: TestAttempt[];
-    lang: 'en' | 'bn' | 'hi';
+    lang: 'en' | 'bn' | 'hi' | 'ka';
     onStartTest: (paper: Paper) => void;
     onViewResult: (attempt: TestAttempt) => void;
     userApiKey?: string;
@@ -77,7 +77,7 @@ interface StudentDashboardProps {
     showToast: (message: string, type?: 'success' | 'error') => void;
 }
 
-const RecommendationCard: React.FC<{ attempt: TestAttempt, lang: 'en' | 'bn' | 'hi' }> = ({ attempt, lang }) => {
+const RecommendationCard: React.FC<{ attempt: TestAttempt, lang: 'en' | 'bn' | 'hi' | 'ka' }> = ({ attempt, lang }) => {
     if (!attempt.analysis || attempt.analysis.weaknesses.length === 0) {
         return null;
     }
@@ -184,8 +184,12 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ papers, attempts, l
     const handleStartSuggestedPractice = async (suggestion: PracticeSuggestion) => {
         setGeneratingPractice(suggestion.topic);
         try {
+            const analyzedAttempts = attempts.filter(a => a.analysis);
+            const subject = analyzedAttempts[0]?.paper?.subject || 'Biology'; // Get subject from latest analyzed attempt
+
             const { generatedQuestions } = await generateQuestionsAI({
                 class: profile?.role ? 10 : 0, // Placeholder class
+                subject: subject,
                 chapter: suggestion.chapter,
                 keywords: suggestion.topic,
                 marks: 2,
@@ -279,6 +283,9 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ papers, attempts, l
                     } else if (lang === 'hi') {
                         const fontData = await getDevanagariFontBase64();
                         if (fontData) { doc.addFileToVFS('NotoSansDevanagari-Regular.ttf', fontData); doc.addFont('NotoSansDevanagari-Regular.ttf', 'NotoSansDevanagari', 'normal'); fontName = 'NotoSansDevanagari'; }
+                    } else if (lang === 'ka') {
+                        const fontData = await getKannadaFontBase64();
+                        if (fontData) { doc.addFileToVFS('NotoSansKannada-Regular.ttf', fontData); doc.addFont('NotoSansKannada-Regular.ttf', 'NotoSansKannada', 'normal'); fontName = 'NotoSansKannada'; }
                     }
                     doc.setFont(fontName, 'normal');
 
@@ -362,14 +369,48 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ papers, attempts, l
                 } else if (format === 'pdf') {
                     await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
                     const { jsPDF } = (window as any).jspdf;
-                    const doc = new jsPDF();
-                    let y = 10;
+                    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+                    
+                    let fontName = 'helvetica';
+                    if (lang === 'bn') {
+                        const fontData = await getBengaliFontBase64();
+                        if (fontData) { doc.addFileToVFS('NotoSansBengali-Regular.ttf', fontData); doc.addFont('NotoSansBengali-Regular.ttf', 'NotoSansBengali', 'normal'); fontName = 'NotoSansBengali'; }
+                    } else if (lang === 'hi') {
+                        const fontData = await getDevanagariFontBase64();
+                        if (fontData) { doc.addFileToVFS('NotoSansDevanagari-Regular.ttf', fontData); doc.addFont('NotoSansDevanagari-Regular.ttf', 'NotoSansDevanagari', 'normal'); fontName = 'NotoSansDevanagari'; }
+                    } else if (lang === 'ka') {
+                        const fontData = await getKannadaFontBase64();
+                        if (fontData) { doc.addFileToVFS('NotoSansKannada-Regular.ttf', fontData); doc.addFont('NotoSansKannada-Regular.ttf', 'NotoSansKannada', 'normal'); fontName = 'NotoSansKannada'; }
+                    }
+                    doc.setFont(fontName, 'normal');
+
+                    const pageHeight = doc.internal.pageSize.getHeight();
+                    const pageWidth = doc.internal.pageSize.getWidth();
+                    const margin = 15;
+                    const maxLineWidth = pageWidth - margin * 2;
+                    let y = margin;
+                    
+                    const checkPageBreak = (neededHeight: number) => {
+                        if (y + neededHeight > pageHeight - margin) {
+                            doc.addPage();
+                            y = margin;
+                        }
+                    };
+
                     flashcards.forEach(f => {
-                        if (y > 280) { doc.addPage(); y = 10; }
-                        doc.text(`Q: ${f.question}`, 10, y);
-                        y += 7;
-                        doc.text(`A: ${f.answer}`, 15, y);
-                        y+= 10;
+                        doc.setFontSize(12);
+                        doc.setFont(fontName, 'bold');
+                        const qLines = doc.splitTextToSize(`Q: ${f.question}`, maxLineWidth);
+                        checkPageBreak(qLines.length * 5 + 7);
+                        doc.text(qLines, margin, y);
+                        y += qLines.length * 5 + 2;
+                        
+                        doc.setFontSize(10);
+                        doc.setFont(fontName, 'normal');
+                        const aLines = doc.splitTextToSize(`A: ${f.answer}`, maxLineWidth);
+                        checkPageBreak(aLines.length * 5 + 10);
+                        doc.text(aLines, margin, y);
+                        y += aLines.length * 5 + 10;
                     });
                     doc.save(`${title}.pdf`);
                 }

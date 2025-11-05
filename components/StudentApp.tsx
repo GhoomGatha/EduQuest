@@ -2,10 +2,9 @@ import React, { useState, useEffect, useCallback, lazy, Suspense, useMemo } from
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../services/supabaseClient';
 import { Paper, TestAttempt, StudentTab, Language, Profile, Question, QuestionSource, Semester, Difficulty, TutorSession } from '../types';
-import { STUDENT_ATTEMPTS_KEY } from '../constants';
+import { STUDENT_ATTEMPTS_KEY, API_KEY_STORAGE_KEY, LANGUAGE_STORAGE_KEY, OPENAI_API_KEY_STORAGE_KEY } from '../constants';
 import { t } from '../utils/localization';
 import LoadingSpinner from './LoadingSpinner';
-import { OPENAI_API_KEY_STORAGE_KEY } from '../services/openaiService';
 
 const Header = lazy(() => import('./student/Header'));
 const Nav = lazy(() => import('./student/Nav'));
@@ -16,9 +15,6 @@ const TestResults = lazy(() => import('./student/TestResults'));
 const Settings = lazy(() => import('./student/Settings'));
 const PracticeZone = lazy(() => import('./student/PracticeZone'));
 const AITutor = lazy(() => import('./student/AITutor'));
-
-const LANGUAGE_STORAGE_KEY = 'eduquest_lang';
-const API_KEY_STORAGE_KEY = 'eduquest_user_api_key';
 
 interface StudentAppProps {
   showToast: (message: string, type?: 'success' | 'error') => void;
@@ -32,10 +28,26 @@ type ViewState =
     | { view: 'settings' }
     | { view: 'test'; paper: Paper };
 
+const LAST_STUDENT_TAB_KEY = 'eduquest_last_student_tab';
+
+const getFontClassForLang = (language: Language): string => {
+    switch (language) {
+        case 'bn': return 'font-noto-bengali';
+        case 'hi': return 'font-noto-devanagari';
+        case 'ka': return 'font-noto-kannada';
+        default: return '';
+    }
+};
 
 const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   const { profile, setProfile, session } = useAuth();
-  const [viewState, setViewState] = useState<ViewState>({ view: 'dashboard' });
+  const [viewState, setViewState] = useState<ViewState>(() => {
+    const lastTab = localStorage.getItem(LAST_STUDENT_TAB_KEY) as StudentTab | null;
+    if (lastTab) {
+        return { view: lastTab };
+    }
+    return { view: 'dashboard' };
+  });
   
   const [papers, setPapers] = useState<Paper[]>([]);
   const [attempts, setAttempts] = useState<TestAttempt[]>([]);
@@ -58,7 +70,23 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   
   useEffect(() => {
     localStorage.setItem(LANGUAGE_STORAGE_KEY, lang);
+    document.body.classList.remove('font-noto-bengali', 'font-noto-devanagari', 'font-noto-kannada');
+    const fontClass = getFontClassForLang(lang);
+    if (fontClass) {
+        document.body.classList.add(fontClass);
+    }
   }, [lang]);
+
+  useEffect(() => {
+    // Persist the current main tab, but not transient states like 'test' or detailed views.
+    if (['dashboard', 'results', 'practice', 'ai_tutor', 'settings'].includes(viewState.view)) {
+      if (viewState.view === 'results' && 'attemptId' in viewState && viewState.attemptId) {
+        // Don't save if we are on a detailed result page.
+      } else {
+        localStorage.setItem(LAST_STUDENT_TAB_KEY, viewState.view);
+      }
+    }
+  }, [viewState]);
 
   const fetchPapers = useCallback(async () => {
     // This check is important because profile might not be loaded yet.
@@ -138,7 +166,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
                         const allAttempts = await fetchAttempts();
                         setAttempts(allAttempts);
                         localStorage.removeItem(STUDENT_ATTEMPTS_KEY);
-                        showToast("Your past results have been synced to your account.", 'success');
+                        showToast("Your past results have been synced to your account.", "success");
                     } else {
                         console.error("Failed to migrate local attempts to database:", error);
                         showToast("Could not sync some of your past results to your account.", 'error');
@@ -162,8 +190,11 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
     // Ensure both session and profile are loaded before fetching any user-specific data.
     if (session?.user && profile?.id) {
         loadData();
-    } else if (!session?.user) {
-        // If there's no user, we can stop loading as there's no data to fetch.
+    } else {
+        // This covers two cases:
+        // 1. No session (logged out): stop loading.
+        // 2. Session exists but profile is still being fetched by parent: stop loading for now.
+        //    A re-render will occur when profile arrives, and the `if` block will execute.
         setLoading(false);
     }
   }, [session, profile, fetchPapers, fetchAttempts, fetchTutorSessions, showToast]);

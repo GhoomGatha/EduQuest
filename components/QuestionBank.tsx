@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Question, Difficulty } from '../types';
+import { Question, Difficulty, Language } from '../types';
 import { t } from '../utils/localization';
 import { CLASSES, MARKS } from '../constants';
 
@@ -8,13 +8,13 @@ interface QuestionBankProps {
   onAddQuestion: () => void;
   onEditQuestion: (question: Question) => void;
   onDeleteQuestion: (id: string) => void;
-  lang: 'en' | 'bn' | 'hi';
+  lang: Language;
   showToast: (message: string, type?: 'success' | 'error') => void;
   onFileImport: (e: React.ChangeEvent<HTMLInputElement>, fileType: 'pdf' | 'csv' | 'txt' | 'image') => void;
   isProcessingFile: boolean;
 }
 
-const QuestionCard: React.FC<{ question: Question; onEdit: () => void; onDelete: () => void; onCopy: () => void; lang: 'en' | 'bn' | 'hi' }> = ({ question, onEdit, onDelete, onCopy, lang }) => (
+const QuestionCard: React.FC<{ question: Question; onEdit: () => void; onDelete: () => void; onCopy: () => void; lang: Language }> = ({ question, onEdit, onDelete, onCopy, lang }) => (
     <div className="bg-white p-4 rounded-xl shadow-sm space-y-3 border border-slate-200">
         <p className="text-slate-800">{question.text}</p>
         {question.image_data_url && (
@@ -56,9 +56,9 @@ const ActionButton: React.FC<{
     <button
         onClick={onClick}
         disabled={disabled}
-        className={`flex flex-col items-center justify-center p-2 rounded-lg text-white shadow-md transform transition-all duration-300 hover:scale-105 hover:shadow-lg focus:outline-none focus:ring-4 focus:ring-opacity-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 w-20 h-20 ${gradient}`}
+        className={`flex flex-col items-center justify-center p-2 rounded-lg text-white shadow-md transform transition-all duration-300 hover:scale-105 hover:shadow-lg focus:outline-none focus:ring-4 focus:ring-opacity-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 w-16 h-16 ${gradient}`}
     >
-        <span className={`text-2xl ${isAnimating ? 'animate-pulse-once' : ''}`}>{emoji}</span>
+        <span className={`text-xl ${isAnimating ? 'animate-pulse-once' : ''}`}>{emoji}</span>
         <span className="text-xs font-bold mt-1">{label}</span>
     </button>
 );

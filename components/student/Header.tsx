@@ -1,5 +1,3 @@
-
-
 import React from 'react';
 import { Language } from '../../types';
 import { t } from '../../utils/localization';

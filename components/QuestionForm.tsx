@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Question, Difficulty, Semester, QuestionSource } from '../types';
+import { Question, Difficulty, Semester, QuestionSource, Language } from '../types';
 import { CLASSES, MARKS, SEMESTERS, YEARS } from '../constants';
 import { t } from '../utils/localization';
 
@@ -7,7 +7,7 @@ interface QuestionFormProps {
   onSubmit: (question: Question) => void;
   onCancel: () => void;
   initialData?: Question | null;
-  lang: 'en' | 'bn' | 'hi';
+  lang: Language;
 }
 
 const QuestionForm: React.FC<QuestionFormProps> = ({ onSubmit, onCancel, initialData, lang }) => {

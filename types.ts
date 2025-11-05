@@ -1,6 +1,7 @@
 
 
 
+
 export enum Difficulty {
   Easy = 'Easy',
   Moderate = 'Moderate',
@@ -66,6 +67,7 @@ export interface Paper {
   created_at: string;
   grounding_sources?: GroundingSource[];
   board?: string;
+  subject?: string;
 }
 
 export type Role = 'teacher' | 'student';
@@ -77,7 +79,7 @@ export interface Profile {
   avatar_url?: string;
 }
 
-export type Language = 'en' | 'bn' | 'hi' | 'kn';
+export type Language = 'en' | 'bn' | 'hi' | 'ka';
 
 export type Tab = 'bank' | 'generator' | 'ai_tutor' | 'archive' | 'settings';
 

@@ -288,7 +288,7 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
 
             if (questionsToGenerate > 0 && customChapter) {
                 const { generatedQuestions } = await generateQuestionsAI({
-                    class: studentClass, chapter: customChapter, marks: 3, difficulty: customDifficulty || Difficulty.Moderate,
+                    class: studentClass, subject: selectedSubject, chapter: customChapter, marks: 3, difficulty: customDifficulty || Difficulty.Moderate,
                     count: questionsToGenerate, generateAnswer: true, wbbseSyllabusOnly: true, lang: lang,
                 }, practiceQuestions, userApiKey, userOpenApiKey);
                 const newAiQuestions: Question[] = generatedQuestions.map((gq): Question => ({
@@ -311,7 +311,7 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
     };
     
     const handleStartMcqChallenge = async () => {
-        if (!mcqChapter) {
+        if (!mcqChapter || !selectedSubject) {
             showToast(t('selectChapterForMcq', lang), 'error');
             return;
         }
@@ -319,6 +319,7 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
         try {
             const { generatedQuestions } = await generateQuestionsAI({
                 class: studentClass,
+                subject: selectedSubject,
                 chapter: mcqChapter,
                 marks: 1, // MCQs are typically 1 mark
                 difficulty: Difficulty.Moderate,
@@ -394,10 +395,10 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
     };
 
     const handleSuggestDiagrams = async () => {
-        if (!diagramChapter) return;
+        if (!diagramChapter || !selectedSubject) return;
         setIsSuggestingDiagrams(true);
         try {
-            const suggestions = await suggestDiagramsAI(diagramChapter, studentClass, lang, userApiKey, userOpenApiKey);
+            const suggestions = await suggestDiagramsAI(selectedSubject, diagramChapter, studentClass, lang, userApiKey, userOpenApiKey);
             setSuggestedDiagrams(suggestions);
             setSuggestionsModalOpen(true);
         } catch (e) {
@@ -411,8 +412,8 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
         setIsDrawingModalOpen(false);
         setIsGrading(true);
         try {
-            if (selectedDiagram) {
-                const grade = await gradeDiagramAI(selectedDiagram.image_prompt, dataUrl, lang, userApiKey, userOpenApiKey);
+            if (selectedDiagram && selectedSubject) {
+                const grade = await gradeDiagramAI(selectedSubject, selectedDiagram.image_prompt, dataUrl, lang, userApiKey, userOpenApiKey);
                 setDiagramGrade(grade);
                 setGradeModalOpen(true);
             }
@@ -434,10 +435,10 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
     };
     
     const handleGenerateGuide = async () => {
-        if(!studyChapter || !session?.user) return;
+        if(!studyChapter || !session?.user || !selectedSubject) return;
         setIsGeneratingGuide(true);
         try {
-            const content = await generateStudyGuideAI(studyChapter, studentClass, guideTopic, lang, userApiKey, userOpenApiKey);
+            const content = await generateStudyGuideAI(selectedSubject, studyChapter, studentClass, guideTopic, lang, userApiKey, userOpenApiKey);
             setGuideContent(content);
             const { error } = await supabase.from('student_generated_content').insert({
                 user_id: session.user.id,
@@ -457,10 +458,10 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
     };
 
     const handleGenerateFlashcards = async () => {
-        if (!studyChapter || !session?.user) return;
+        if (!studyChapter || !session?.user || !selectedSubject) return;
         setIsGeneratingFlashcards(true);
         try {
-            const generated = await generateFlashcardsAI(studyChapter, studentClass, 10, lang, userApiKey, userOpenApiKey);
+            const generated = await generateFlashcardsAI(selectedSubject, studyChapter, studentClass, 10, lang, userApiKey, userOpenApiKey);
             setFlashcards(generated);
             const { error } = await supabase.from('student_generated_content').insert({
                 user_id: session.user.id,

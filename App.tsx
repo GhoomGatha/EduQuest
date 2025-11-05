@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
 import { useAuth } from './hooks/useAuth';
 import Auth from './components/Auth';
@@ -73,8 +72,8 @@ const App: React.FC = () => {
         if (session) {
             checkSchema(); // Initial check on app load.
             // Set session start time on login/refresh
-            if (!localStorage.getItem('eduquest_current_session_start')) {
-                localStorage.setItem('eduquest_current_session_start', new Date().toISOString());
+            if (!sessionStorage.getItem('eduquest_current_session_start')) {
+                sessionStorage.setItem('eduquest_current_session_start', new Date().toISOString());
             }
         }
     }, [session, checkSchema]);
@@ -90,6 +89,11 @@ const App: React.FC = () => {
 
     if (!session) {
         return <Auth />;
+    }
+
+    if (!profile) {
+        // This case handles a failed profile fetch after login or a new user whose profile trigger hasn't completed.
+        return <LoadingSpinner message="Verifying account details..." />;
     }
 
     if (!profile?.full_name) {

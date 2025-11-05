@@ -3,7 +3,7 @@ import { Language, TutorSession } from '../types';
 import { t } from '../utils/localization';
 import { answerTeacherDoubtAI } from '../services/geminiService';
 import { loadScript } from '../utils/scriptLoader';
-import { getBengaliFontBase64, getDevanagariFontBase64 } from '../utils/fontData';
+import { getBengaliFontBase64, getDevanagariFontBase64, getKannadaFontBase64 } from '../utils/fontData';
 import Modal from './Modal';
 
 // --- Start of Embedded MarkdownRenderer Component ---
@@ -166,6 +166,9 @@ const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpen
                 } else if (lang === 'hi') {
                     const fontData = await getDevanagariFontBase64();
                     if (fontData) { doc.addFileToVFS('NotoSansDevanagari-Regular.ttf', fontData); doc.addFont('NotoSansDevanagari-Regular.ttf', 'NotoSansDevanagari', 'normal'); fontName = 'NotoSansDevanagari'; }
+                } else if (lang === 'ka') {
+                    const fontData = await getKannadaFontBase64();
+                    if (fontData) { doc.addFileToVFS('NotoSansKannada-Regular.ttf', fontData); doc.addFont('NotoSansKannada-Regular.ttf', 'NotoSansKannada', 'normal'); fontName = 'NotoSansKannada'; }
                 }
                 doc.setFont(fontName, 'normal');
     
@@ -202,16 +205,15 @@ const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpen
         }
     };
 
-
     return (
         <div className="p-4 sm:p-6 space-y-6">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                 <AnimatedHeader emoji="✨" animation="animate-sparkle" title={t('newSession', lang)} />
-                <p className="text-sm text-slate-500 -mt-4 mb-4">{t('tutorForTeachersSubtitle', lang)}</p>
+                <AnimatedHeader emoji="✨" animation="animate-sparkle" title={t('newSession', lang)} />
+                <p className="text-sm text-slate-500 -mt-4 mb-4">{t('aiTutorSubtitle', lang)}</p>
                 <div className="space-y-4">
                     <div>
-                        <label className={labelStyles}>{t('yourQuery', lang)}</label>
-                        <textarea value={query} onChange={e => setQuery(e.target.value)} rows={5} className={inputStyles} placeholder={t('typeYourQueryHere', lang)} />
+                        <label className={labelStyles}>{t('typeYourQuestion', lang)}</label>
+                        <textarea value={query} onChange={e => setQuery(e.target.value)} rows={5} className={inputStyles} placeholder="..." />
                     </div>
                     <div>
                         <label className="block text-sm font-medium text-slate-600">{t('orUploadImage', lang)}</label>

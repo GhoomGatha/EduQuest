@@ -1,9 +1,11 @@
 
+
 import React, { useState, useEffect, useRef } from 'react';
 import { t } from '../utils/localization';
 import { Language, Profile } from '../types';
 import { supabase } from '../services/supabaseClient';
 import CameraModal from './CameraModal';
+import { useAuth } from '../hooks/useAuth';
 
 interface SettingsProps {
     onExport: () => void;
@@ -74,6 +76,7 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
   const [isCameraModalOpen, setCameraModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const { setSession, setProfile } = useAuth();
 
   const inputStyles = "w-full p-2 border rounded-lg border-slate-300 bg-slate-50 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 transition";
 
@@ -153,21 +156,23 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
 
   const handleLogout = async () => {
     setIsLoggingOut(true);
-    const currentSessionStart = localStorage.getItem('eduquest_current_session_start');
+    
+    const currentSessionStart = sessionStorage.getItem('eduquest_current_session_start');
     if (currentSessionStart) {
         localStorage.setItem('eduquest_last_login', currentSessionStart);
     }
-    localStorage.removeItem('eduquest_current_session_start');
+    sessionStorage.removeItem('eduquest_current_session_start');
+
+    // Let the onAuthStateChange listener in index.tsx handle the UI update.
     const { error } = await supabase.auth.signOut();
+
     if (error) {
         console.error('Logout error:', error.message);
-        showToast(`Logout failed: ${error.message}`, 'error');
+        showToast(`Logout failed: ${error.message}. Please try again.`, 'error');
         setIsLoggingOut(false);
     }
-    // No explicit redirect is needed.
-    // The `useAuth` hook's `onAuthStateChange` listener will detect the session change
-    // and update the application state, causing the `App` component to render the login screen.
-  }
+    // On success, the component will unmount due to state change from onAuthStateChange listener.
+  };
 
   const buttonBaseStyles = "mt-2 sm:mt-0 w-full sm:w-auto px-4 py-2 font-semibold text-white rounded-lg shadow-sm hover:shadow-md hover:-translate-y-px transition-all";
 

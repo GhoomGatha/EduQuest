@@ -1,6 +1,10 @@
 import { Tab, StudentTab } from './types';
 
 export const LOCAL_STORAGE_KEY = 'eduquest_v1_0';
+export const API_KEY_STORAGE_KEY = 'eduquest_user_api_key'; // Gemini
+export const OPENAI_API_KEY_STORAGE_KEY = 'eduquest_user_openai_api_key'; // OpenAI
+// FIX: Export LANGUAGE_STORAGE_KEY to be used across the application for storing language preference.
+export const LANGUAGE_STORAGE_KEY = 'eduquest_lang';
 export const CURRENT_YEAR = new Date().getFullYear();
 export const YEARS = Array.from({ length: 26 }, (_, i) => 2020 + i);
 export const CLASSES = [7, 8, 9, 10, 11, 12];
@@ -18,9 +22,9 @@ export const TABS: { id: Tab; name: string; icon: string }[] = [
 
 export const STUDENT_TABS: { id: StudentTab; name: string; icon: string }[] = [
   { id: 'dashboard', name: 'Dashboard', icon: '🏠' },
-  { id: 'results', name: 'My Results', icon: '📊' },
-  { id: 'practice', name: 'Practice', icon: '✍️' },
   { id: 'ai_tutor', name: 'AI Tutor', icon: '🧑‍🏫' },
+  { id: 'practice', name: 'Practice', icon: '✍️' },
+  { id: 'results', name: 'My Results', icon: '📊' },
   { id: 'settings', name: 'Settings', icon: '⚙️' },
 ];
 

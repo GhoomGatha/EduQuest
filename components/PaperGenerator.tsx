@@ -1,5 +1,7 @@
+
+
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Paper, Question, QuestionSource, Difficulty, Semester, GroundingSource } from '../types';
+import { Paper, Question, QuestionSource, Difficulty, Semester, GroundingSource, Language } from '../types';
 import { t } from '../utils/localization';
 import { generateQuestionsAI, getChaptersAI, getSubjectsAI } from '../services/geminiService';
 import { CLASSES, YEARS, SEMESTERS, BOARDS, MARKS } from '../constants';
@@ -50,7 +52,7 @@ interface PaperGeneratorDraft {
 interface PaperGeneratorProps {
     questions: Question[];
     onSavePaper: (paper: Paper) => void;
-    lang: 'en' | 'bn' | 'hi' | 'kn';
+    lang: Language;
     showToast: (message: string, type?: 'success' | 'error') => void;
     userApiKey?: string;
     userOpenApiKey?: string;
@@ -294,13 +296,23 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             : settings.aiQuestionType.filter(t => t !== type);
 
         const requiresAnswer = ['Multiple Choice', 'Fill in the Blanks', 'True/False', 'Odd Man Out', 'Matching'].includes(type);
+        
+        // Check if any of the NEWLY selected types require an answer
+        const anyNewTypesRequireAnswer = newTypes.some(t => 
+            ['Multiple Choice', 'Fill in the Blanks', 'True/False', 'Odd Man Out', 'Matching'].includes(t)
+        );
 
+        let newGenerateAnswers = settings.aiGenerateAnswers;
         if (isAdding && requiresAnswer) {
-            // When adding a type that requires an answer, automatically check the box.
-            setSettings({ ...settings, aiQuestionType: newTypes, aiGenerateAnswers: true });
-        } else {
-             setSettings({ ...settings, aiQuestionType: newTypes });
+            // If we add a type that requires an answer, always turn it on.
+            newGenerateAnswers = true;
+        } else if (!anyNewTypesRequireAnswer) {
+            // If after changes, NO types require an answer, we can safely turn it off.
+            // The user can re-enable it for short answers if they wish.
+            newGenerateAnswers = false;
         }
+        
+        setSettings({ ...settings, aiQuestionType: newTypes, aiGenerateAnswers: newGenerateAnswers });
     };
 
     const handleDistributionChange = (index: number, field: 'count' | 'marks', value: number) => {
@@ -362,12 +374,13 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             class: selectedClass,
             semester,
             board,
+            subject: selectedSubject,
             source,
             questions,
             created_at: new Date().toISOString(),
             grounding_sources,
         };
-    }, [title, year, selectedClass, semester, board]);
+    }, [title, year, selectedClass, semester, board, selectedSubject]);
 
 
     const handleGenerate = async (useAI: boolean) => {
@@ -385,6 +398,10 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
 
             if (useAI) {
                 try {
+                    if (!selectedSubject) {
+                        showToast('Please select a subject first.', 'error');
+                        return;
+                    }
                     const aiChapters = settings.aiChapters;
                     if (aiChapters.length === 0) {
                         showToast('Please provide at least one chapter for AI generation.', 'error');
@@ -430,6 +447,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
 
                             const { generatedQuestions, groundingChunks } = await generateQuestionsAI({
                                 class: selectedClass,
+                                subject: selectedSubject,
                                 chapter: chapterForThisGroup,
                                 marks,
                                 difficulty: settings.aiDifficulty,
@@ -623,6 +641,62 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         link.click();
         document.body.removeChild(link);
     };
+
+    const handleExportWord = async (paper: Paper) => {
+        if (!paper) return;
+
+        let htmlContent = `
+            <html>
+                <head><meta charset="UTF-8"></head>
+                <body>
+                    <h1 style="text-align: center;">${paper.title}</h1>
+                    <p><strong>Class:</strong> ${paper.class}, <strong>Year:</strong> ${paper.year}, <strong>Semester:</strong> ${paper.semester}</p>
+                    <hr />
+        `;
+    
+        paper.questions.forEach((q, index) => {
+            htmlContent += `
+                <p><strong>${index + 1}.</strong> ${q.text} <em>(${q.marks} ${t('marks', lang)})</em></p>
+            `;
+            if (q.image_data_url) {
+                htmlContent += `<p><img src="${q.image_data_url}" alt="Question Image" style="max-width: 400px; height: auto;" /></p>`;
+            }
+        });
+    
+        if (paper.questions.some(q => q.answer)) {
+            htmlContent += `
+                <hr />
+                <h2>${t('answerKey', lang)}</h2>
+            `;
+            paper.questions.forEach((q, index) => {
+                if (q.answer) {
+                    htmlContent += `<p><strong>${index + 1}.</strong> ${q.answer}</p>`;
+                }
+            });
+        }
+        
+        if (paper.grounding_sources && paper.grounding_sources.length > 0) {
+            htmlContent += `
+                <hr />
+                <h2>${t('sources', lang)}</h2>
+            `;
+            paper.grounding_sources.forEach(source => {
+                htmlContent += `<p><a href="${source.uri}">${source.title || source.uri}</a></p>`;
+            });
+        }
+    
+        htmlContent += '</body></html>';
+    
+        const blob = new Blob([`\ufeff${htmlContent}`], { type: 'application/msword' });
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        link.href = url;
+        link.download = `${paper.title.replace(/ /g, '_')}.doc`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    };
     
     const handleExportPDF = async (paper: Paper) => {
         if (!paper) return;
@@ -657,7 +731,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             } else {
                 showToast('Could not load Hindi font for PDF.', 'error');
             }
-        } else if (lang === 'kn') {
+        } else if (lang === 'ka') {
             const fontData = await getKannadaFontBase64();
             if (fontData) {
                 doc.addFileToVFS('NotoSansKannada-Regular.ttf', fontData);
@@ -943,53 +1017,6 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                         </div>
                     </div>
                 </div>
-
-                {/* New Mark Distribution */}
-                <div className="border-t border-slate-200 pt-5">
-                    <div className="flex items-center justify-between mb-2">
-                        <AnimatedHeader emoji="📊" animation="animate-pulse" title={t('markDistribution', lang)} />
-                         <p className="text-sm font-bold text-slate-700">{t('totalMarks', lang)}: <span className="text-indigo-600">{calculatedTotal}</span></p>
-                    </div>
-                     <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
-                        {settings.distribution.map((dist, index) => (
-                            <div key={index} className="grid grid-cols-[1fr_auto_1fr_auto] gap-x-2 items-center">
-                                <input
-                                    type="text"
-                                    inputMode="numeric"
-                                    value={dist.count}
-                                    onChange={e => {
-                                        const value = e.target.value.replace(/\D/g, '');
-                                        handleDistributionChange(index, 'count', value === '' ? 0 : parseInt(value, 10));
-                                    }}
-                                    className={inputStyles}
-                                    aria-label={t('numberOfQuestions', lang)}
-                                />
-                                <div className="text-slate-500 font-medium text-center">x</div>
-                                <input
-                                    type="text"
-                                    inputMode="numeric"
-                                    list="marks-options"
-                                    value={dist.marks}
-                                    onChange={e => {
-                                        const value = e.target.value.replace(/\D/g, '');
-                                        handleDistributionChange(index, 'marks', value === '' ? 0 : parseInt(value, 10));
-                                    }}
-                                    className={inputStyles}
-                                    aria-label={t('marksPerQuestion', lang)}
-                                />
-                                <button onClick={() => removeDistributionRow(index)} className="text-red-500 hover:text-red-700 p-1 rounded-full hover:bg-red-100 transition-colors" aria-label={`${t('remove', lang)} row`}>
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg>
-                                </button>
-                            </div>
-                        ))}
-                         <datalist id="marks-options">
-                            {MARKS.map(m => <option key={m} value={m} />)}
-                        </datalist>
-                        <button onClick={addDistributionRow} className="w-full text-center px-4 py-2 bg-slate-200 text-slate-700 font-semibold rounded-lg hover:bg-slate-300 transition-colors">
-                            + {t('addQuestionType', lang)}
-                        </button>
-                    </div>
-                </div>
                 
                  {/* AI Settings */}
                 <div className="border-t border-slate-200 pt-5 space-y-4">
@@ -1111,6 +1138,59 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                     </div>
                 </div>
 
+                {/* New Mark Distribution */}
+                <div className="border-t border-slate-200 pt-5">
+                    <div className="flex items-center justify-between mb-2">
+                        <AnimatedHeader emoji="📊" animation="animate-pulse" title={t('markDistribution', lang)} />
+                         <p className="text-sm font-bold text-slate-700">{t('totalMarks', lang)}: <span className="text-indigo-600">{calculatedTotal}</span></p>
+                    </div>
+                     <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
+                        <div className="grid grid-cols-[1fr_auto_1fr_auto] gap-x-2 items-center px-1 mb-1">
+                            <label className="text-xs font-semibold text-slate-500">{t('numberOfQuestions', lang)}</label>
+                            <div></div>
+                            <label className="text-xs font-semibold text-slate-500">{t('marksPerQuestion', lang)}</label>
+                            <div></div>
+                        </div>
+                        {settings.distribution.map((dist, index) => (
+                            <div key={index} className="grid grid-cols-[1fr_auto_1fr_auto] gap-x-2 items-center">
+                                <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={dist.count}
+                                    onChange={e => {
+                                        const value = e.target.value.replace(/\D/g, '');
+                                        handleDistributionChange(index, 'count', value === '' ? 0 : parseInt(value, 10));
+                                    }}
+                                    className={inputStyles}
+                                    aria-label={t('numberOfQuestions', lang)}
+                                />
+                                <div className="text-slate-500 font-medium text-center">x</div>
+                                <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    list="marks-options"
+                                    value={dist.marks}
+                                    onChange={e => {
+                                        const value = e.target.value.replace(/\D/g, '');
+                                        handleDistributionChange(index, 'marks', value === '' ? 0 : parseInt(value, 10));
+                                    }}
+                                    className={inputStyles}
+                                    aria-label={t('marksPerQuestion', lang)}
+                                />
+                                <button onClick={() => removeDistributionRow(index)} className="text-red-500 hover:text-red-700 p-1 rounded-full hover:bg-red-100 transition-colors" aria-label={`${t('remove', lang)} row`}>
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg>
+                                </button>
+                            </div>
+                        ))}
+                         <datalist id="marks-options">
+                            {MARKS.map(m => <option key={m} value={m} />)}
+                        </datalist>
+                        <button onClick={addDistributionRow} className="w-full text-center px-4 py-2 bg-slate-200 text-slate-700 font-semibold rounded-lg hover:bg-slate-300 transition-colors">
+                            + {t('addQuestionType', lang)}
+                        </button>
+                    </div>
+                </div>
+
                 {/* Actions */}
                 <div className="border-t border-slate-200 pt-5 space-y-3">
                     <div className="flex flex-col sm:flex-row gap-3">
@@ -1187,7 +1267,8 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                             )}
                         </div>
                         <div className="flex flex-wrap justify-end gap-3 pt-4 mt-4 border-t border-slate-200">
-                            <button onClick={() => handleExportTXT(generatedPaper)} className="px-5 py-2.5 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 shadow-sm hover:shadow-md hover:-translate-y-px transition-all">{t('exportTXT', lang)}</button>
+                            <button onClick={() => handleExportTXT(generatedPaper)} className="px-5 py-2.5 bg-slate-600 text-white font-semibold rounded-lg hover:bg-slate-700 shadow-sm hover:shadow-md hover:-translate-y-px transition-all">{t('exportTXT', lang)}</button>
+                            <button onClick={() => handleExportWord(generatedPaper)} className="px-5 py-2.5 bg-blue-700 text-white font-semibold rounded-lg hover:bg-blue-800 shadow-sm hover:shadow-md hover:-translate-y-px transition-all">{t('exportWord', lang)}</button>
                             <button onClick={() => handleExportCSV(generatedPaper)} className="px-5 py-2.5 bg-gray-600 text-white font-semibold rounded-lg hover:bg-gray-700 shadow-sm hover:shadow-md hover:-translate-y-px transition-all">{t('exportCSV', lang)}</button>
                             <button onClick={() => handleExportXLSX(generatedPaper)} className="px-5 py-2.5 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 shadow-sm hover:shadow-md hover:-translate-y-px transition-all">{t('exportXLSX', lang)}</button>
                             <button onClick={() => handleExportPDF(generatedPaper)} className="px-5 py-2.5 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 shadow-sm hover:shadow-md hover:-translate-y-px transition-all">{t('exportPDF', lang)}</button>
