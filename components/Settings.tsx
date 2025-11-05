@@ -163,15 +163,20 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
     }
     sessionStorage.removeItem('eduquest_current_session_start');
 
-    // Let the onAuthStateChange listener in index.tsx handle the UI update.
     const { error } = await supabase.auth.signOut();
 
     if (error) {
         console.error('Logout error:', error.message);
         showToast(`Logout failed: ${error.message}. Please try again.`, 'error');
         setIsLoggingOut(false);
+    } else {
+        // By setting session and profile to null here, we trigger an immediate
+        // re-render to the Auth component via the context, which is the standard
+        // SPA way of handling logout. This avoids a full page reload which
+        // was causing issues in the hosting environment.
+        setProfile(null);
+        setSession(null);
     }
-    // On success, the component will unmount due to state change from onAuthStateChange listener.
   };
 
   const buttonBaseStyles = "mt-2 sm:mt-0 w-full sm:w-auto px-4 py-2 font-semibold text-white rounded-lg shadow-sm hover:shadow-md hover:-translate-y-px transition-all";
