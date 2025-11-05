@@ -29,6 +29,40 @@ const UserCircleIcon = () => (
   </svg>
 );
 
+const AnimatedHeader = ({ emoji, animation, title }: { emoji: string; animation: string; title: string; }) => {
+    const ref = useRef<HTMLHeadingElement>(null);
+    const [isIntersecting, setIntersecting] = useState(false);
+
+    useEffect(() => {
+        const observer = new IntersectionObserver(
+            ([entry]) => {
+                setIntersecting(entry.isIntersecting);
+            },
+            {
+                rootMargin: '-50% 0px -50% 0px', // Trigger when element is in vertical center
+                threshold: 0
+            }
+        );
+
+        if (ref.current) {
+            observer.observe(ref.current);
+        }
+
+        return () => {
+            if (ref.current) {
+                observer.unobserve(ref.current);
+            }
+        };
+    }, []);
+
+    return (
+        <h2 ref={ref} className="text-xl font-bold font-serif-display text-slate-800">
+            <span className={`inline-block mr-2 text-2xl ${isIntersecting ? animation : ''}`}>{emoji}</span>
+            {title}
+        </h2>
+    );
+};
+
 
 const StudentSettings: React.FC<StudentSettingsProps> = ({ 
     onExport, onImport, onClear, lang, profile, onProfileUpdate, showToast,
@@ -133,7 +167,7 @@ const StudentSettings: React.FC<StudentSettingsProps> = ({
     <div className="p-2 sm:p-4 md:p-6 space-y-6">
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
         <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-bold font-serif-display text-slate-800">{t('profile', lang)}</h2>
+            <AnimatedHeader emoji="👤" animation="animate-pulse" title={t('profile', lang)} />
             {!isEditing && <button onClick={() => setIsEditing(true)} className="font-semibold text-indigo-600 hover:text-indigo-800">Edit</button>}
         </div>
         {isEditing ? (
@@ -170,8 +204,8 @@ const StudentSettings: React.FC<StudentSettingsProps> = ({
       </div>
 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h2 className="text-xl font-bold font-serif-display text-slate-800 mb-4">{t('apiKeyManagement', lang)}</h2>
-        <div className="space-y-4 p-4 rounded-lg bg-slate-50">
+        <AnimatedHeader emoji="🔑" animation="animate-tilt" title={t('apiKeyManagement', lang)} />
+        <div className="space-y-4 p-4 rounded-lg bg-slate-50 mt-4">
           <p className="text-slate-600 text-sm">{t('apiKeyInstruction', lang)}&nbsp;<a href="https://ai.google.dev/" target="_blank" rel="noopener noreferrer" className="text-indigo-600 font-medium hover:underline">{t('getYourKey', lang)}</a></p>
           <div className="flex flex-col sm:flex-row gap-2">
             <input type="password" placeholder={t('enterApiKey', lang)} value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} className="flex-grow p-2 border border-slate-300 rounded-lg shadow-sm" />
@@ -181,8 +215,8 @@ const StudentSettings: React.FC<StudentSettingsProps> = ({
       </div>
       
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h2 className="text-xl font-bold font-serif-display text-slate-800 mb-4">{t('openaiApiKeyManagement', lang)}</h2>
-        <div className="space-y-4 p-4 rounded-lg bg-slate-50">
+        <AnimatedHeader emoji="🗝️" animation="animate-tilt" title={t('openaiApiKeyManagement', lang)} />
+        <div className="space-y-4 p-4 rounded-lg bg-slate-50 mt-4">
             <p className="text-slate-600 text-sm">{t('openaiApiKeyInstruction', lang)}&nbsp;<a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-indigo-600 font-medium hover:underline">{t('getYourOpenAIKey', lang)}</a></p>
             <div className="flex flex-col sm:flex-row gap-2">
                 <input type="password" placeholder={t('enterOpenAIApiKey', lang)} value={openApiKeyInput} onChange={(e) => setOpenApiKeyInput(e.target.value)} className="flex-grow p-2 border border-slate-300 rounded-lg shadow-sm" />
@@ -192,8 +226,8 @@ const StudentSettings: React.FC<StudentSettingsProps> = ({
       </div>
 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h2 className="text-xl font-bold font-serif-display text-slate-800 mb-4">{t('dataManagement', lang)}</h2>
-        <div className="space-y-4">
+        <AnimatedHeader emoji="💾" animation="animate-bobbing" title={t('dataManagement', lang)} />
+        <div className="space-y-4 mt-4">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-3 rounded-lg bg-slate-50">
             <p className="text-slate-700 font-medium">{t('exportData', lang)}</p>
             <button
@@ -235,8 +269,8 @@ const StudentSettings: React.FC<StudentSettingsProps> = ({
       </div>
 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h2 className="text-xl font-bold font-serif-display text-slate-800 mb-4">{t('supportEduQuestTitle', lang)}</h2>
-        <div className="space-y-3 text-slate-600 bg-slate-50 p-4 rounded-lg">
+        <AnimatedHeader emoji="💖" animation="animate-beat" title={t('supportEduQuestTitle', lang)} />
+        <div className="space-y-3 text-slate-600 bg-slate-50 p-4 rounded-lg mt-4">
           <p>{t('supportEduQuestText', lang)}</p>
           <p className="font-semibold text-center text-indigo-700 bg-indigo-100 p-2 rounded-lg">
             {t('supportUpi', lang)}
@@ -246,8 +280,8 @@ const StudentSettings: React.FC<StudentSettingsProps> = ({
       </div>
 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h2 className="text-xl font-bold font-serif-display text-slate-800 mb-4">{t('supportTitle', lang)}</h2>
-        <div className="p-3 rounded-lg bg-slate-50">
+        <AnimatedHeader emoji="✉️" animation="animate-sway" title={t('supportTitle', lang)} />
+        <div className="p-3 rounded-lg bg-slate-50 mt-4">
           <p className="text-slate-700">
             {t('supportText', lang)}{' '}
             <a href="mailto:seamateofficial@gmail.com" className="font-semibold text-indigo-600 hover:underline">
@@ -258,8 +292,8 @@ const StudentSettings: React.FC<StudentSettingsProps> = ({
       </div>
 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h2 className="text-xl font-bold font-serif-display text-slate-800 mb-4">{t('appInfo', lang)}</h2>
-        <div className="space-y-2 text-slate-600 text-center">
+        <AnimatedHeader emoji="ℹ️" animation="animate-glow" title={t('appInfo', lang)} />
+        <div className="space-y-2 text-slate-600 text-center mt-4">
           <p className="font-semibold text-lg">{t('appTitle', lang)}</p>
           <p className="italic">“{t('studentAppSubtitle', lang)}”</p>
           <p className="text-sm pt-2">{t('version', lang)}</p>
