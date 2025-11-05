@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Paper, Question, StudentAnswer, TestAttempt, QuestionSource } from '../../types';
 import { t } from '../../utils/localization';
@@ -16,10 +15,14 @@ const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, on
     const [studentAnswers, setStudentAnswers] = useState<Record<string, string>>({});
     const [timeLeft, setTimeLeft] = useState(paper.questions.length * 90); // 1.5 minutes per question
     const [isQuitModalOpen, setQuitModalOpen] = useState(false);
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
     const currentQuestion = paper.questions[currentQuestionIndex];
 
-    const handleSubmit = () => {
+    const handleSubmit = async () => {
+        if (isSubmitting) return;
+        setIsSubmitting(true);
+
         let score = 0;
         const totalMarks = paper.questions.reduce((acc, q) => acc + q.marks, 0);
         const finalAnswers: StudentAnswer[] = [];
@@ -46,7 +49,13 @@ const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, on
             semester: paper.semester,
             paper: paper,
         };
-        onComplete(attempt);
+        
+        // The onComplete function (handleTestComplete) is async and handles navigation.
+        // We await it to keep the UI in a submitting state until the process is finished.
+        await (onComplete(attempt) as unknown as Promise<void>);
+        
+        // In case the parent component's logic fails to navigate away, reset the state.
+        setIsSubmitting(false);
     };
 
     useEffect(() => {
@@ -197,9 +206,10 @@ const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, on
                     {currentQuestionIndex === paper.questions.length - 1 ? (
                         <button 
                             onClick={handleSubmit}
-                            className="px-6 py-3 font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700"
+                            disabled={isSubmitting}
+                            className="px-6 py-3 font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:bg-green-400"
                         >
-                           {t('submitTest', lang)}
+                           {isSubmitting ? 'Submitting...' : t('submitTest', lang)}
                         </button>
                     ) : (
                         <button 

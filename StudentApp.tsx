@@ -103,6 +103,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
     if (error) {
         console.error('Error fetching papers:', error.message || error);
         showToast('Failed to load tests.', 'error');
+        throw error; // Throw error to be caught by the caller
     } else {
         setPapers(data || []);
     }
@@ -119,7 +120,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
     if (error) {
         console.error('Error fetching attempts:', error.message || error);
         showToast('Failed to load past results.', 'error');
-        return [];
+        throw error; // Throw error to be caught by the caller
     }
     return data.map(row => ({ ...row.attempt_data, db_id: row.id })) || [];
   }, [session, showToast]);
@@ -135,6 +136,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
     if (error) {
         console.error("Failed to fetch tutor sessions", error);
         showToast("Could not load AI Tutor history.", 'error');
+        throw error; // Throw error to be caught by the caller
     } else {
         setTutorSessions(data || []);
     }
@@ -144,47 +146,53 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   useEffect(() => {
     const loadData = async () => {
         setLoading(true);
-        await Promise.all([fetchPapers(), fetchTutorSessions()]);
-        const dbAttempts = await fetchAttempts();
+        try {
+            await Promise.all([fetchPapers(), fetchTutorSessions()]);
+            const dbAttempts = await fetchAttempts();
 
-        // One-time migration from localStorage
-        const localAttemptsRaw = localStorage.getItem(STUDENT_ATTEMPTS_KEY);
-        if (localAttemptsRaw) {
-            try {
-                const localAttempts: TestAttempt[] = JSON.parse(localAttemptsRaw);
-                const newAttemptsToMigrate = localAttempts.filter(local => 
-                    !dbAttempts.some(db => db.paperId === local.paperId && db.completedAt === local.completedAt)
-                );
+            // One-time migration from localStorage
+            const localAttemptsRaw = localStorage.getItem(STUDENT_ATTEMPTS_KEY);
+            if (localAttemptsRaw) {
+                try {
+                    const localAttempts: TestAttempt[] = JSON.parse(localAttemptsRaw);
+                    const newAttemptsToMigrate = localAttempts.filter(local => 
+                        !dbAttempts.some(db => db.paperId === local.paperId && db.completedAt === local.completedAt)
+                    );
 
-                if (newAttemptsToMigrate.length > 0) {
-                    const recordsToInsert = newAttemptsToMigrate.map(attempt => ({
-                        user_id: session!.user.id,
-                        attempt_data: attempt,
-                    }));
-                    const { error } = await supabase.from('student_test_attempts').insert(recordsToInsert);
-                    if (!error) {
-                        const allAttempts = await fetchAttempts();
-                        setAttempts(allAttempts);
-                        localStorage.removeItem(STUDENT_ATTEMPTS_KEY);
-                        showToast("Your past results have been synced to your account.", "success");
+                    if (newAttemptsToMigrate.length > 0) {
+                        const recordsToInsert = newAttemptsToMigrate.map(attempt => ({
+                            user_id: session!.user.id,
+                            attempt_data: attempt,
+                        }));
+                        const { error } = await supabase.from('student_test_attempts').insert(recordsToInsert);
+                        if (!error) {
+                            const allAttempts = await fetchAttempts();
+                            setAttempts(allAttempts);
+                            localStorage.removeItem(STUDENT_ATTEMPTS_KEY);
+                            showToast("Your past results have been synced to your account.", "success");
+                        } else {
+                            console.error("Failed to migrate local attempts to database:", error);
+                            showToast("Could not sync some of your past results to your account.", 'error');
+                            setAttempts([...dbAttempts, ...newAttemptsToMigrate]); // Merge for session
+                        }
                     } else {
-                        console.error("Failed to migrate local attempts to database:", error);
-                        showToast("Could not sync some of your past results to your account.", 'error');
-                        setAttempts([...dbAttempts, ...newAttemptsToMigrate]); // Merge for session
+                        setAttempts(dbAttempts);
+                        localStorage.removeItem(STUDENT_ATTEMPTS_KEY); // Clean up old data
                     }
-                } else {
+                } catch (e) {
+                    console.error("Failed to parse/migrate local attempts", e);
                     setAttempts(dbAttempts);
-                    localStorage.removeItem(STUDENT_ATTEMPTS_KEY); // Clean up old data
+                    localStorage.removeItem(STUDENT_ATTEMPTS_KEY);
                 }
-            } catch (e) {
-                console.error("Failed to parse/migrate local attempts", e);
+            } else {
                 setAttempts(dbAttempts);
-                localStorage.removeItem(STUDENT_ATTEMPTS_KEY);
             }
-        } else {
-            setAttempts(dbAttempts);
+        } catch (error) {
+            console.error("Error loading student data:", error);
+            // The individual fetch functions already show toasts, so we don't need another one here.
+        } finally {
+            setLoading(false);
         }
-        setLoading(false);
     };
 
     // Ensure both session and profile are loaded before fetching any user-specific data.
