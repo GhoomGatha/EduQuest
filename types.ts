@@ -1,7 +1,5 @@
 
 
-
-
 export enum Difficulty {
   Easy = 'Easy',
   Moderate = 'Moderate',
@@ -81,7 +79,7 @@ export interface Profile {
 
 export type Language = 'en' | 'bn' | 'hi' | 'ka';
 
-export type Tab = 'bank' | 'generator' | 'ai_tutor' | 'archive' | 'settings';
+export type Tab = 'bank' | 'generator' | 'ai_tutor' | 'archive' | 'settings' | 'test_papers';
 
 export interface ToastMessage {
   id: number;
@@ -90,7 +88,7 @@ export interface ToastMessage {
 }
 
 // Student-specific types
-export type StudentTab = 'dashboard' | 'results' | 'practice' | 'ai_tutor' | 'settings';
+export type StudentTab = 'dashboard' | 'results' | 'practice' | 'ai_tutor' | 'settings' | 'test_papers';
 
 export interface StudentAnswer {
   questionId: string;
@@ -130,7 +128,7 @@ export interface DiagramSuggestion {
 }
 
 export interface DiagramGrade {
-  score: number;
+  score?: number;
   strengths: string[];
   areasForImprovement: string[];
   feedback: string;
@@ -147,6 +145,7 @@ export interface UploadProgress {
   completed: number;
   pending: number;
   currentFile: string;
+  error?: string;
 }
 
 export interface StudyMaterial {
@@ -165,5 +164,50 @@ export interface TutorSession {
   query_text?: string;
   query_image_url?: string;
   response_text: string;
+  response_image_url?: string;
   tutor_class: number;
+}
+// FIX: Export ViewState for use in multiple components.
+export type ViewState = 
+    | { view: 'dashboard' }
+    | { view: 'results'; attemptId?: string }
+    | { view: 'practice' }
+    | { view: 'ai_tutor' }
+    | { view: 'settings' }
+    | { view: 'test_papers' }
+    | { view: 'test'; paper: Paper };
+
+// Unified type for activity feeds
+export type ActivityItem = {
+  id: string;
+  type: 'question' | 'paper' | 'tutor_session' | 'test_attempt' | 'study_material';
+  timestamp: string;
+  title: string;
+  data: Question | Paper | TutorSession | TestAttempt | StudyMaterial;
+};
+
+// Types for Final Exam Papers
+export interface FinalExamPaperQuestion {
+    q_num: string; // e.g., "1.1", "2. (a)"
+    text: string;
+    marks: number;
+    options?: string[]; // For MCQs
+    answer?: string; // Optional answer key
+}
+
+export interface FinalExamPaper {
+    id: string; // UUID
+    board: string;
+    class: number;
+    subject: string;
+    exam_year: number;
+    paper_content: {
+        title: string;
+        sections: {
+            title: string;
+            questions: FinalExamPaperQuestion[];
+        }[];
+    };
+    created_at: string;
+    grounding_sources?: GroundingSource[];
 }

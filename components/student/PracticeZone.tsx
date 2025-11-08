@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Question, Difficulty, Language, Flashcard, QuestionSource, Semester, DiagramSuggestion, DiagramGrade } from '../../types';
+// FIX: Import ViewState from the shared types file.
+import { Question, Difficulty, Language, Flashcard, QuestionSource, Semester, DiagramSuggestion, DiagramGrade, ViewState } from '../../types';
 import { t } from '../../utils/localization';
-import { generateFlashcardsAI, generateQuestionsAI, getChaptersAI, getSubjectsAI, extractQuestionsFromImageAI, suggestDiagramsAI, gradeDiagramAI, answerDoubtAI, generateStudyGuideAI } from '../../services/geminiService';
+import { generateFlashcardsAI, generateQuestionsAI, getChaptersAI, getSubjectsAI, extractQuestionsFromImageAI, suggestDiagramsAI, gradeDiagramAI, answerDoubtAI, generateStudyGuideAI, explainDiagramAI } from '../../services/geminiService';
 import Modal from '../Modal';
 import LoadingSpinner from '../LoadingSpinner';
 import CameraModal from '../CameraModal';
@@ -86,45 +87,13 @@ interface PracticeZoneProps {
     showToast: (message: string, type?: 'success' | 'error') => void;
     userApiKey?: string;
     userOpenApiKey?: string;
+    onSetViewState: (viewState: ViewState) => void;
+    onSaveTutorResponse: (queryText: string, queryImageUrl: string | null, responseText: string, tutorClass: number) => void;
 }
 
 const CURRICULUM_PREFS_KEY = 'eduquest_student_curriculum_prefs';
 
-const AnimatedHeader = ({ emoji, animation, title }: { emoji: string; animation: string; title: string; }) => {
-    const ref = useRef<HTMLHeadingElement>(null);
-    const [isIntersecting, setIntersecting] = useState(false);
-
-    useEffect(() => {
-        const observer = new IntersectionObserver(
-            ([entry]) => {
-                setIntersecting(entry.isIntersecting);
-            },
-            {
-                rootMargin: '-50% 0px -50% 0px', // Trigger when the element is in the vertical center of the viewport
-                threshold: 0
-            }
-        );
-
-        if (ref.current) {
-            observer.observe(ref.current);
-        }
-
-        return () => {
-            if (ref.current) {
-                observer.unobserve(ref.current);
-            }
-        };
-    }, []);
-
-    return (
-        <h2 ref={ref} className="text-xl font-bold font-serif-display text-slate-700">
-            <span className={`inline-block mr-2 text-2xl ${isIntersecting ? animation : ''}`}>{emoji}</span>
-            {title}
-        </h2>
-    );
-};
-
-const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStartPractice, showToast, userApiKey, userOpenApiKey }) => {
+const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStartPractice, showToast, userApiKey, userOpenApiKey, onSetViewState, onSaveTutorResponse }) => {
     const { session } = useAuth();
     // Common state
     const [board, setBoard] = useState<string>('WBBSE');
@@ -173,6 +142,8 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
     const [diagramGrade, setDiagramGrade] = useState<DiagramGrade | null>(null);
     const [isGradeModalOpen, setGradeModalOpen] = useState(false);
     const [isDrawingModalOpen, setIsDrawingModalOpen] = useState(false);
+    const [isExplainingDiagram, setIsExplainingDiagram] = useState(false);
+    const [diagramExplanation, setDiagramExplanation] = useState('');
 
     useEffect(() => {
         try {
@@ -181,7 +152,7 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
                 const savedPrefs = JSON.parse(savedPrefsRaw);
                 if (savedPrefs.board) setBoard(savedPrefs.board);
                 if (savedPrefs.studentClass) setStudentClass(savedPrefs.studentClass);
-                // We don't set selectedSubject here as it depends on an async fetch
+                if (savedPrefs.selectedSubject) setSelectedSubject(savedPrefs.selectedSubject);
             }
         } catch (e) {
             console.warn("Could not load curriculum preferences from localStorage", e);
@@ -190,7 +161,6 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
 
     useEffect(() => {
         const prefs = { board, studentClass, selectedSubject };
-        // Avoid saving an empty subject on initial load
         if (selectedSubject) {
             localStorage.setItem(CURRICULUM_PREFS_KEY, JSON.stringify(prefs));
         }
@@ -216,40 +186,30 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
         }
     }, [availableClasses, studentClass]);
 
+    const stableShowToast = useCallback(showToast, []);
+
     useEffect(() => {
         setLoadingSubjects(true);
-        setSubjects([]);
-        setSelectedSubject('');
         getSubjectsAI(board, studentClass, lang, userApiKey, userOpenApiKey)
             .then(subjectList => {
                 setSubjects(subjectList);
-                const savedPrefsRaw = localStorage.getItem(CURRICULUM_PREFS_KEY);
-                let savedSubject = '';
-                if (savedPrefsRaw) {
-                    const savedPrefs = JSON.parse(savedPrefsRaw);
-                    if (savedPrefs.board === board && savedPrefs.studentClass === studentClass) {
-                        savedSubject = savedPrefs.selectedSubject;
-                    }
-                }
-
-                if (savedSubject && subjectList.includes(savedSubject)) {
-                    setSelectedSubject(savedSubject);
-                } else {
+                if (!subjectList.includes(selectedSubject)) {
                     const preferredSubject = subjectList.find(s => s.toLowerCase().includes('biology') || s.toLowerCase().includes('life science'));
                     if (preferredSubject) {
                         setSelectedSubject(preferredSubject);
                     } else if (subjectList.length > 0) {
                         setSelectedSubject(subjectList[0]);
+                    } else {
+                        setSelectedSubject('');
                     }
                 }
             })
-            .catch(() => showToast("Could not fetch subjects.", 'error'))
+            .catch(() => stableShowToast("Could not fetch subjects.", 'error'))
             .finally(() => setLoadingSubjects(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [board, studentClass, lang, userApiKey, userOpenApiKey, showToast]);
+    }, [board, studentClass, lang, userApiKey, userOpenApiKey, stableShowToast]);
     
     useEffect(() => {
-        // Clear all chapter-dependent inputs when subject changes
         setChapters([]);
         setCustomChapter('');
         setMcqChapter('');
@@ -286,14 +246,14 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
             let practiceQuestions = filtered.sort(() => 0.5 - Math.random()).slice(0, customNumQuestions);
             const questionsToGenerate = customNumQuestions - practiceQuestions.length;
 
-            if (questionsToGenerate > 0 && customChapter) {
+            if (questionsToGenerate > 0 && selectedSubject) {
                 const { generatedQuestions } = await generateQuestionsAI({
                     class: studentClass, subject: selectedSubject, chapter: customChapter, marks: 3, difficulty: customDifficulty || Difficulty.Moderate,
                     count: questionsToGenerate, generateAnswer: true, wbbseSyllabusOnly: true, lang: lang,
                 }, practiceQuestions, userApiKey, userOpenApiKey);
                 const newAiQuestions: Question[] = generatedQuestions.map((gq): Question => ({
-                    id: `gen-${Date.now()}-${Math.random()}`, text: gq.text!, answer: gq.answer, marks: 3, difficulty: customDifficulty || Difficulty.Moderate,
-                    class: studentClass, chapter: customChapter, source: QuestionSource.Generated, year: new Date().getFullYear(),
+                    id: `gen-${Date.now()}-${Math.random()}`, text: gq.text!, answer: gq.answer, marks: gq.marks || 3, difficulty: customDifficulty || Difficulty.Moderate,
+                    class: studentClass, chapter: gq.chapter || customChapter || 'General', source: QuestionSource.Generated, year: new Date().getFullYear(),
                     semester: Semester.First, tags: [], used_in: [],
                 }));
                 practiceQuestions = [...practiceQuestions, ...newAiQuestions];
@@ -407,6 +367,20 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
             setIsSuggestingDiagrams(false);
         }
     };
+
+    const handleExplainDiagram = async (diagram: DiagramSuggestion) => {
+        setIsExplainingDiagram(true);
+        setDiagramExplanation('');
+        try {
+            const explanation = await explainDiagramAI(diagram.image_prompt, lang, userApiKey, userOpenApiKey);
+            setDiagramExplanation(explanation);
+            onSaveTutorResponse(`Explain the diagram: ${diagram.name}`, null, explanation, studentClass);
+        } catch(e) {
+            showToast("Failed to get explanation.", 'error');
+        } finally {
+            setIsExplainingDiagram(false);
+        }
+    };
     
     const handleDrawingSubmit = async (dataUrl: string) => {
         setIsDrawingModalOpen(false);
@@ -480,8 +454,8 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
     };
 
     // --- Render Logic ---
-    const inputStyles = "w-full p-2.5 border border-slate-300 bg-white rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition";
-    const labelStyles = "block text-sm font-semibold text-slate-600 mb-1";
+    const cardInputStyles = "w-full p-2.5 bg-white/20 border border-white/30 rounded-lg text-white placeholder-white/70 focus:ring-2 focus:ring-white/50 focus:border-white transition";
+    const cardLabelStyles = "block text-sm font-semibold text-white/90 mb-1";
     const mainLoadingMessage = isGeneratingPractice ? t('generatingPracticeTest', lang) : isGeneratingMcq ? t('generatingMcqChallenge', lang) : null;
     if (mainLoadingMessage) return <LoadingSpinner message={mainLoadingMessage} />;
 
@@ -494,26 +468,29 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
 
             {/* Curriculum Selection */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
-                <AnimatedHeader emoji="🎯" animation="animate-pulse" title={t('curriculumSelection', lang)} />
-                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <h2 className="text-xl font-bold font-serif-display text-slate-700">
+                    <span className="inline-block mr-2 text-2xl">🎯</span>
+                    {t('curriculumSelection', lang)}
+                </h2>
+                 <div className="grid grid-cols-3 gap-4">
                     <div>
-                        <label className={labelStyles}>{t('board', lang)}</label>
-                        <select value={board} onChange={e => setBoard(e.target.value)} className={inputStyles}>
+                        <label className="block text-sm font-semibold text-slate-600 mb-1">{t('board', lang)}</label>
+                        <select value={board} onChange={e => setBoard(e.target.value)} className="w-full p-2.5 border border-slate-300 bg-white rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition">
                             {BOARDS.map(b => <option key={b} value={b}>{b}</option>)}
                         </select>
                     </div>
                     <div>
-                        <label className={labelStyles}>{t('class', lang)}</label>
-                        <select value={studentClass} onChange={e => setStudentClass(parseInt(e.target.value))} className={inputStyles}>
+                        <label className="block text-sm font-semibold text-slate-600 mb-1">{t('class', lang)}</label>
+                        <select value={studentClass} onChange={e => setStudentClass(parseInt(e.target.value))} className="w-full p-2.5 border border-slate-300 bg-white rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition">
                             {availableClasses.map(c => <option key={c} value={c}>{c}</option>)}
                         </select>
                     </div>
                      <div>
-                        <label className={labelStyles}>{t('subject', lang)}</label>
+                        <label className="block text-sm font-semibold text-slate-600 mb-1">{t('subject', lang)}</label>
                         <select 
                             value={selectedSubject} 
                             onChange={e => setSelectedSubject(e.target.value)} 
-                            className={inputStyles}
+                            className="w-full p-2.5 border border-slate-300 bg-white rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition"
                             disabled={loadingSubjects || subjects.length === 0}
                         >
                             <option value="">{loadingSubjects ? 'Loading...' : 'Select Subject'}</option>
@@ -523,107 +500,120 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
                 </div>
             </div>
             
-            {/* AI MCQ Challenge */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
-                <AnimatedHeader emoji="🏆" animation="animate-bobbing" title={t('aiMcqChallenge', lang)} />
-                <p className="text-sm text-slate-500">{t('aiMcqChallengeSubtitle', lang)}</p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                        <label className={labelStyles}>{t('chapter', lang)}</label>
-                        <input list="chapters-datalist" value={mcqChapter} onChange={e => setMcqChapter(e.target.value)} className={inputStyles}
-                            placeholder={loadingChapters || !selectedSubject ? 'Select a subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                
+                {/* AI MCQ Challenge */}
+                <div className="bg-gradient-to-br from-indigo-500 to-purple-600 p-6 rounded-xl shadow-lg text-white flex flex-col transition-transform hover:-translate-y-1">
+                    <h2 className="text-2xl font-bold font-serif-display flex items-center mb-2"><span className="text-3xl mr-3">🏆</span>{t('aiMcqChallenge', lang)}</h2>
+                    <p className="text-sm text-indigo-100 mb-4 flex-grow">{t('aiMcqChallengeSubtitle', lang)}</p>
+                    <div className="space-y-4">
+                        <div>
+                            <label className={cardLabelStyles}>{t('chapter', lang)}</label>
+                            <input list="chapters-datalist" value={mcqChapter} onChange={e => setMcqChapter(e.target.value)} className={cardInputStyles}
+                                placeholder={loadingChapters || !selectedSubject ? 'Select subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
+                        </div>
+                        <div>
+                            <label className={cardLabelStyles}>{t('numberOfQuestions', lang)}</label>
+                            <input type="number" value={mcqNumQuestions} onChange={e => setMcqNumQuestions(Math.max(1, parseInt(e.target.value)))} min="1" max="50" className={cardInputStyles} />
+                        </div>
                     </div>
-                    <div>
-                        <label className={labelStyles}>{t('numberOfQuestions', lang)}</label>
-                        <input type="number" value={mcqNumQuestions} onChange={e => setMcqNumQuestions(Math.max(1, parseInt(e.target.value)))} min="1" max="50" className={inputStyles} />
-                    </div>
-                </div>
-                <div className="flex justify-end">
-                    <button onClick={handleStartMcqChallenge} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all">
+                    <button onClick={handleStartMcqChallenge} className="mt-6 w-full py-3 bg-white/90 text-indigo-700 font-bold rounded-lg shadow-md hover:bg-white transition-all">
                         {t('startMcqChallenge', lang)}
                     </button>
                 </div>
-            </div>
 
-            {/* Study Smarter section with new Quick Study Guide */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6">
-                <AnimatedHeader emoji="💡" animation="animate-beat" title={t('studySmarter', lang)} />
-                <div>
-                    <label className={labelStyles}>{t('quickStudyGuide', lang)}</label>
-                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                        <input list="chapters-datalist" value={studyChapter} onChange={e => setStudyChapter(e.target.value)} className={`${inputStyles}`}
-                            placeholder={loadingChapters || !selectedSubject ? 'Select a subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
-                        <select value={guideTopic} onChange={e => setGuideTopic(e.target.value)} className={inputStyles}>
-                            <option value="Definitions">{t('definitions', lang)}</option>
-                            <option value="Key Differences">{t('keyDifferences', lang)}</option>
-                            <option value="Process Explanations">{t('processExplanations', lang)}</option>
-                        </select>
-                        <button onClick={handleGenerateGuide} disabled={isGeneratingGuide || !studyChapter} className="px-5 py-2.5 bg-gradient-to-r from-purple-500 to-indigo-600 text-white font-semibold rounded-lg shadow-sm disabled:opacity-50">
-                            {isGeneratingGuide ? t('generatingGuide', lang) : `📝 ${t('generateGuide', lang)}`}
-                        </button>
+                {/* Custom Practice */}
+                <div className="bg-gradient-to-br from-sky-500 to-cyan-400 p-6 rounded-xl shadow-lg text-white flex flex-col transition-transform hover:-translate-y-1">
+                    <h2 className="text-2xl font-bold font-serif-display flex items-center mb-2"><span className="text-3xl mr-3">✍️</span>{t('customPracticeSession', lang)}</h2>
+                    <p className="text-sm text-sky-100 mb-4 flex-grow">{t('customPracticeSessionSubtitle', lang)}</p>
+                    <div className="space-y-4">
+                        <div>
+                            <label className={cardLabelStyles}>{t('chapter', lang)}</label>
+                            <input list="chapters-datalist" value={customChapter} onChange={e => setCustomChapter(e.target.value)} className={cardInputStyles}
+                                placeholder={loadingChapters || !selectedSubject ? 'Select subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className={cardLabelStyles}>{t('selectDifficulty', lang)}</label>
+                                <select value={customDifficulty} onChange={e => setCustomDifficulty(e.target.value as Difficulty | '')} className={cardInputStyles}>
+                                    <option value="">{t('allDifficulties', lang)}</option>
+                                    {Object.values(Difficulty).map(d => <option key={d} value={d} className="text-black">{t(d, lang)}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className={cardLabelStyles}>{t('numberOfQuestions', lang)}</label>
+                                <input type="number" value={customNumQuestions} onChange={e => setCustomNumQuestions(Math.max(1, parseInt(e.target.value)))} min="1" max="50" className={cardInputStyles} />
+                            </div>
+                        </div>
                     </div>
-                </div>
-                <div>
-                    <label className={labelStyles}>{t('flashcardGenerator', lang)}</label>
-                     <div className="flex justify-end">
-                         <button onClick={handleGenerateFlashcards} disabled={isGeneratingFlashcards || !studyChapter} className="w-full sm:w-auto px-5 py-2.5 bg-gradient-to-r from-purple-500 to-indigo-600 text-white font-semibold rounded-lg shadow-sm disabled:opacity-50">
-                            {isGeneratingFlashcards ? t('generating', lang) : `🧠 ${t('generateFlashcards', lang)}`}
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            {/* Custom Practice Session */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
-                <AnimatedHeader emoji="✍️" animation="animate-sway" title={t('customPracticeSession', lang)} />
-                <p className="text-sm text-slate-500">{t('customPracticeSessionSubtitle', lang)}</p>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="md:col-span-3">
-                        <label className={labelStyles}>{t('chapter', lang)}</label>
-                        <input list="chapters-datalist" value={customChapter} onChange={e => setCustomChapter(e.target.value)} className={inputStyles}
-                            placeholder={loadingChapters || !selectedSubject ? 'Select a subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
-                    </div>
-                    <div>
-                        <label className={labelStyles}>{t('selectDifficulty', lang)}</label>
-                        <select value={customDifficulty} onChange={e => setCustomDifficulty(e.target.value as Difficulty | '')} className={inputStyles}>
-                            <option value="">{t('allDifficulties', lang)}</option>
-                            {Object.values(Difficulty).map(d => <option key={d} value={d}>{t(d, lang)}</option>)}
-                        </select>
-                    </div>
-                    <div>
-                        <label className={labelStyles}>{t('numberOfQuestions', lang)}</label>
-                        <input type="number" value={customNumQuestions} onChange={e => setCustomNumQuestions(Math.max(1, parseInt(e.target.value)))} min="1" max="50" className={inputStyles} />
-                    </div>
-                </div>
-                <div className="flex justify-end">
-                    <button onClick={handleStartPractice} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all">
+                    <button onClick={handleStartPractice} className="mt-6 w-full py-3 bg-white/90 text-sky-700 font-bold rounded-lg shadow-md hover:bg-white transition-all">
                         {t('startPractice', lang)}
                     </button>
                 </div>
-            </div>
 
-            {/* New Feature: Diagram Practice */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
-                <AnimatedHeader emoji="🎨" animation="animate-tilt" title={t('diagramPractice', lang)} />
-                <p className="text-sm text-slate-500">{t('diagramPracticeSubtitle', lang)}</p>
-                <div className="flex flex-col sm:flex-row gap-2">
-                     <input list="chapters-datalist" value={diagramChapter} onChange={e => setDiagramChapter(e.target.value)} className={`${inputStyles} flex-grow`}
-                        placeholder={loadingChapters || !selectedSubject ? 'Select a subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
-                    <button onClick={handleSuggestDiagrams} disabled={isSuggestingDiagrams || !diagramChapter} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all disabled:bg-indigo-300">
+                {/* Study Tools */}
+                <div className="bg-gradient-to-br from-emerald-500 to-green-600 p-6 rounded-xl shadow-lg text-white flex flex-col transition-transform hover:-translate-y-1">
+                    <h2 className="text-2xl font-bold font-serif-display flex items-center mb-2"><span className="text-3xl mr-3">💡</span>{t('studySmarter', lang)}</h2>
+                    <p className="text-sm text-emerald-100 mb-4 flex-grow">Generate flashcards or a quick study guide for any topic.</p>
+                    <div className="space-y-4">
+                        <div>
+                            <label className={cardLabelStyles}>{t('chapter', lang)}</label>
+                             <input list="chapters-datalist" value={studyChapter} onChange={e => setStudyChapter(e.target.value)} className={cardInputStyles}
+                                placeholder={loadingChapters || !selectedSubject ? 'Select subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
+                        </div>
+                        <div>
+                            <label className={cardLabelStyles}>{t('contentType', lang)}</label>
+                            <select value={guideTopic} onChange={e => setGuideTopic(e.target.value)} className={cardInputStyles}>
+                                <option value="Definitions" className="text-black">{t('definitions', lang)}</option>
+                                <option value="Key Differences" className="text-black">{t('keyDifferences', lang)}</option>
+                                <option value="Process Explanations" className="text-black">{t('processExplanations', lang)}</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div className="mt-6 grid grid-cols-2 gap-3">
+                         <button onClick={handleGenerateGuide} disabled={isGeneratingGuide || !studyChapter} className="w-full py-3 bg-white/90 text-emerald-700 font-bold rounded-lg shadow-md hover:bg-white transition-all disabled:opacity-60 disabled:cursor-not-allowed">
+                            {isGeneratingGuide ? '...' : t('generateGuide', lang)}
+                        </button>
+                        <button onClick={handleGenerateFlashcards} disabled={isGeneratingFlashcards || !studyChapter} className="w-full py-3 bg-white/90 text-emerald-700 font-bold rounded-lg shadow-md hover:bg-white transition-all disabled:opacity-60 disabled:cursor-not-allowed">
+                            {isGeneratingFlashcards ? '...' : t('generateFlashcards', lang)}
+                        </button>
+                    </div>
+                </div>
+
+                {/* Diagram Practice */}
+                <div className="bg-gradient-to-br from-amber-500 to-orange-500 p-6 rounded-xl shadow-lg text-white flex flex-col transition-transform hover:-translate-y-1">
+                    <h2 className="text-2xl font-bold font-serif-display flex items-center mb-2"><span className="text-3xl mr-3">🎨</span>{t('diagramPractice', lang)}</h2>
+                    <p className="text-sm text-amber-100 mb-4 flex-grow">{t('diagramPracticeSubtitle', lang)}</p>
+                    <div className="space-y-4">
+                        <div>
+                            <label className={cardLabelStyles}>{t('chapter', lang)}</label>
+                             <input list="chapters-datalist" value={diagramChapter} onChange={e => setDiagramChapter(e.target.value)} className={cardInputStyles}
+                                placeholder={loadingChapters || !selectedSubject ? 'Select subject first' : t('selectOrTypeChapter', lang)} disabled={loadingChapters || !selectedSubject}/>
+                        </div>
+                    </div>
+                     <button onClick={handleSuggestDiagrams} disabled={isSuggestingDiagrams || !diagramChapter} className="mt-6 w-full py-3 bg-white/90 text-amber-700 font-bold rounded-lg shadow-md hover:bg-white transition-all disabled:opacity-60 disabled:cursor-not-allowed">
                         {isSuggestingDiagrams ? t('suggestingDiagrams', lang) : `💡 ${t('suggestDiagrams', lang)}`}
                     </button>
                 </div>
-            </div>
 
-            {/* New Feature: Scan Paper */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
-                <AnimatedHeader emoji="📸" animation="animate-flash" title={t('scanYourPaper', lang)} />
-                <p className="text-sm text-slate-500">{t('scanYourPaperSubtitle', lang)}</p>
-                <div className="flex justify-end">
-                    <button onClick={() => openCamera(handleScanCapture)} disabled={isProcessingScan} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all disabled:bg-indigo-300">
+                {/* Scan Your Paper */}
+                <div className="bg-gradient-to-br from-slate-600 to-gray-800 p-6 rounded-xl shadow-lg text-white flex flex-col transition-transform hover:-translate-y-1">
+                    <h2 className="text-2xl font-bold font-serif-display flex items-center mb-2"><span className="text-3xl mr-3">📸</span>{t('scanYourPaper', lang)}</h2>
+                    <p className="text-sm text-slate-200 mb-4 flex-grow">{t('scanYourPaperSubtitle', lang)}</p>
+                     <button onClick={() => openCamera(handleScanCapture)} disabled={isProcessingScan} className="mt-6 w-full py-3 bg-white/90 text-slate-700 font-bold rounded-lg shadow-md hover:bg-white transition-all disabled:opacity-60 disabled:cursor-not-allowed">
                         {isProcessingScan ? t('analyzingPaper', lang) : `📷 ${t('scanWithCamera', lang)}`}
                     </button>
                 </div>
+                
+                 {/* Quick Link to AI Tutor */}
+                <div className="bg-gradient-to-br from-rose-500 to-pink-500 p-6 rounded-xl shadow-lg text-white flex flex-col transition-transform hover:-translate-y-1">
+                    <h2 className="text-2xl font-bold font-serif-display flex items-center mb-2"><span className="text-3xl mr-3">🧑‍🏫</span>{t('ai_tutor', lang)}</h2>
+                    <p className="text-sm text-rose-100 mb-4 flex-grow">{t('aiTutorSubtitle', lang)}</p>
+                     <button onClick={() => onSetViewState({ view: 'ai_tutor' })} className="mt-6 w-full py-3 bg-white/90 text-rose-700 font-bold rounded-lg shadow-md hover:bg-white transition-all">
+                        Ask a Question
+                    </button>
+                </div>
+
             </div>
 
             <datalist id="chapters-datalist">
@@ -656,6 +646,10 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
                             <h3 className="font-bold">{d.name}</h3>
                             <p className="text-sm text-slate-600 mt-1">{d.description}</p>
                             <div className="flex justify-end mt-3 gap-3">
+                                <button onClick={() => { handleExplainDiagram(d); }}
+                                    className="px-4 py-2 bg-green-100 text-green-800 font-semibold rounded-lg text-sm" disabled={isExplainingDiagram}>
+                                        {isExplainingDiagram ? '...' : 'Explain'}
+                                    </button>
                                 <button onClick={() => { setSelectedDiagram(d); setSuggestionsModalOpen(false); setIsDrawingModalOpen(true); }}
                                     className="px-4 py-2 bg-purple-600 text-white font-semibold rounded-lg text-sm">✏️ Draw in App</button>
                                 <button onClick={() => { setSelectedDiagram(d); setSuggestionsModalOpen(false); openCamera(handleDiagramCapture); }}
@@ -668,10 +662,6 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
              <Modal isOpen={isGradeModalOpen} onClose={() => setGradeModalOpen(false)} title={t('diagramGrade', lang)}>
                 {isGrading ? <LoadingSpinner message={t('gradingDiagram', lang)} /> : diagramGrade ? (
                     <div className="space-y-4">
-                        <div className="text-center">
-                            <p className="text-sm text-slate-500 uppercase font-semibold">Score</p>
-                            <p className="text-6xl font-bold text-indigo-600">{diagramGrade.score}<span className="text-4xl text-slate-400">/10</span></p>
-                        </div>
                         <div>
                             <h3 className="font-semibold text-green-700">Strengths</h3>
                             <ul className="list-disc list-inside text-slate-600">
@@ -696,6 +686,9 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
             </Modal>
             <Modal isOpen={isGuideModalOpen} onClose={() => setIsGuideModalOpen(false)} title={t('yourStudyGuide', lang)}>
                 <MarkdownRenderer content={guideContent} />
+            </Modal>
+            <Modal isOpen={!!diagramExplanation} onClose={() => setDiagramExplanation('')} title={`Explanation: ${selectedDiagram?.name}`}>
+                 {isExplainingDiagram ? <LoadingSpinner message="Getting explanation..." /> : <MarkdownRenderer content={diagramExplanation} />}
             </Modal>
         </div>
     );

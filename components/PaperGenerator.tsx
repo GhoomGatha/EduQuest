@@ -115,6 +115,17 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
     const [isChapterDropdownOpen, setIsChapterDropdownOpen] = useState(false);
     
     const draftStateRef = useRef<PaperGeneratorDraft>();
+    const abortControllerRef = useRef<AbortController | null>(null);
+
+    useEffect(() => {
+        // Cleanup function to abort any ongoing AI requests when the component unmounts.
+        return () => {
+            if (abortControllerRef.current) {
+                abortControllerRef.current.abort('Component unmounted');
+                console.log("Paper generator request aborted due to component unmount.");
+            }
+        };
+    }, []);
 
     const getInitialWbbseState = () => {
         const saved = localStorage.getItem(WBBSE_SYLLABUS_KEY);
@@ -193,7 +204,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             })
             .catch(err => {
                 console.error("Failed to fetch subjects", err);
-                stableShowToast("Could not fetch subjects.", 'error');
+                stableShowToast(err.message || "Could not fetch subjects.", 'error');
             })
             .finally(() => {
                 setLoadingSubjects(false);
@@ -216,7 +227,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             })
             .catch(err => {
                 console.error("Failed to fetch chapters", err);
-                stableShowToast("Could not fetch chapters.", 'error');
+                stableShowToast(err.message || "Could not fetch chapters.", 'error');
             })
             .finally(() => {
                 setLoadingChapters(false);
@@ -386,152 +397,111 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
     const handleGenerate = async (useAI: boolean) => {
         setIsGenerating(true);
         setGeneratedPaper(null);
-
+    
+        abortControllerRef.current = new AbortController();
+        const signal = abortControllerRef.current.signal;
+    
+        // FIX: Moved 'distribution' outside the try block to make it accessible in the catch block.
+        const distribution = settings.distribution.filter(d => d.count > 0 && d.marks > 0);
         try {
-            let distribution: MarkDistributionRow[];
-            distribution = settings.distribution.filter(d => d.count > 0 && d.marks > 0);
             if (distribution.length === 0) {
                 showToast('Please add at least one question type to the mark distribution.', 'error');
-                setIsGenerating(false);
                 return;
             }
-
+    
             if (useAI) {
-                try {
-                    if (!selectedSubject) {
-                        showToast('Please select a subject first.', 'error');
-                        return;
-                    }
-                    const aiChapters = settings.aiChapters;
-                    if (aiChapters.length === 0) {
-                        showToast('Please provide at least one chapter for AI generation.', 'error');
-                        return; // No finally block here, so need to set isGenerating to false
-                    }
-                    
-                    let existingQuestionPool = questions.filter(q => 
-                        q.class === selectedClass && 
-                        (avoidPrevious ? q.used_in.length === 0 : true)
-                    );
-                    
-                    let finalQuestions: Question[] = [];
-                    let allGroundingChunks: any[] = [];
-
-                    for (const { count, marks } of distribution) {
-                        if (count <= 0) continue;
-
-                        const selectedTypes = settings.aiQuestionType.length > 0 ? settings.aiQuestionType : ['Short Answer'];
-
-                        const requestsToMake: { count: number; type: string }[] = [];
-
-                        if (selectedTypes.length <= 1) {
-                            requestsToMake.push({ count, type: selectedTypes[0] });
-                        } else {
-                            const numTypes = selectedTypes.length;
-                            const baseCount = Math.floor(count / numTypes);
-                            const remainder = count % numTypes;
-                            
-                            for (let i = 0; i < numTypes; i++) {
-                                const subCount = baseCount + (i < remainder ? 1 : 0);
-                                if (subCount > 0) {
-                                    requestsToMake.push({ count: subCount, type: selectedTypes[i] });
-                                }
-                            }
-                        }
-                        
-                        for (const request of requestsToMake) {
-                            if (finalQuestions.length > 0) {
-                            await new Promise(resolve => setTimeout(resolve, 2000));
-                            }
-                            
-                            const chapterForThisGroup = aiChapters[Math.floor(Math.random() * aiChapters.length)];
-
-                            const { generatedQuestions, groundingChunks } = await generateQuestionsAI({
-                                class: selectedClass,
-                                subject: selectedSubject,
-                                chapter: chapterForThisGroup,
-                                marks,
-                                difficulty: settings.aiDifficulty,
-                                count: request.count,
-                                questionType: request.type,
-                                keywords: settings.aiKeywords,
-                                generateAnswer: settings.aiGenerateAnswers,
-                                wbbseSyllabusOnly: settings.wbbseSyllabusOnly,
-                                lang: lang,
-                                useSearchGrounding: settings.useSearchGrounding,
-                            }, existingQuestionPool, userApiKey, userOpenApiKey);
-
-                            if (generatedQuestions.length > 0) {
-                                const newQuestions = generatedQuestions.map((g): Question => ({
-                                    id: `gen-${new Date().toISOString()}-${Math.random()}`,
-                                    text: g.text!,
-                                    answer: g.answer,
-                                    image_data_url: g.image_data_url,
-                                    class: selectedClass,
-                                    chapter: chapterForThisGroup,
-                                    marks,
-                                    difficulty: settings.aiDifficulty,
-                                    used_in: [],
-                                    source: QuestionSource.Generated,
-                                    year: year,
-                                    semester: semester,
-                                    tags: settings.aiKeywords.split(',').map(t => t.trim()).filter(Boolean),
-                                }));
-                                finalQuestions.push(...newQuestions);
-                                existingQuestionPool.push(...newQuestions);
-                            }
-
-                            if (groundingChunks) {
-                                allGroundingChunks.push(...groundingChunks);
-                            }
-                        }
-                    }
-
-                    const grounding_sources = allGroundingChunks
-                        ?.map((chunk: any) => chunk.web)
-                        .filter(Boolean)
-                        .map((source: any) => ({ uri: source.uri, title: source.title }))
-                        // remove duplicates
-                        .filter((source, index, self) => index === self.findIndex(s => s.uri === source.uri));
-
-
-                    const paper = createPaper(finalQuestions, QuestionSource.Generated, grounding_sources);
-                    onSavePaper(paper);
-                    setGeneratedPaper(paper);
-
-                } catch (error: any) {
-                    console.error("Error generating paper with AI:", error);
-
-                    if (typeof error.message === 'string' && error.message.includes("API Key is not configured")) {
-                        showToast(error.message, 'error');
-                        return;
-                    }
-
-                    const fallbackResult = generateFromBank(distribution);
-
-                    if ('error' in fallbackResult) {
-                        let isQuotaError = false;
-                        const errorDetails = error?.error || error;
-                        const messageText = String(error?.message || errorDetails?.message || '').toLowerCase();
-                        
-                        if (
-                            errorDetails?.status === 'RESOURCE_EXHAUSTED' ||
-                            errorDetails?.code === 429 ||
-                            messageText.includes('quota') ||
-                            messageText.includes('rate limit')
-                        ) {
-                            isQuotaError = true;
-                        }
-
-                        const aiErrorMessage = isQuotaError ? t('apiQuotaError', lang) : t('apiError', lang);
-                        showToast(`${aiErrorMessage}. ${fallbackResult.error}`, 'error');
-                        
-                    } else {
-                        showToast(t('fallbackToBank', lang), 'success');
-                        const paper = createPaper(fallbackResult.questions, QuestionSource.Manual);
-                        onSavePaper(paper);
-                        setGeneratedPaper(paper);
-                    }
+                if (!selectedSubject) {
+                    showToast('Please select a subject first.', 'error');
+                    return;
                 }
+                if (settings.aiChapters.length === 0) {
+                    showToast('Please provide at least one chapter for AI generation.', 'error');
+                    return;
+                }
+                
+                let existingQuestionPool = questions.filter(q => 
+                    q.class === selectedClass && 
+                    (avoidPrevious ? q.used_in.length === 0 : true)
+                );
+                
+                let finalQuestions: Question[] = [];
+                let allGroundingChunks: any[] = [];
+                
+                const allQuestionTypes = settings.aiQuestionType.length > 0 ? settings.aiQuestionType : ['Short Answer'];
+                const textQuestionTypes = allQuestionTypes.filter(t => t !== 'Image-based');
+                const hasImageQuestions = allQuestionTypes.includes('Image-based');
+
+                // 1. Batch generate all text-based questions
+                if (textQuestionTypes.length > 0) {
+                    const textPaperStructure = distribution.map(dist => ({
+                        count: dist.count,
+                        marks: dist.marks,
+                        types: textQuestionTypes,
+                    }));
+                    
+                    const { generatedQuestions, groundingChunks } = await generateQuestionsAI({
+                        class: selectedClass, subject: selectedSubject, chapters: settings.aiChapters, difficulty: settings.aiDifficulty,
+                        paperStructure: textPaperStructure,
+                        keywords: settings.aiKeywords, generateAnswer: settings.aiGenerateAnswers,
+                        wbbseSyllabusOnly: settings.wbbseSyllabusOnly, lang: lang, useSearchGrounding: settings.useSearchGrounding,
+                    }, existingQuestionPool, userApiKey, userOpenApiKey, signal);
+
+                    if (generatedQuestions.length > 0) {
+                         const newQuestions = (generatedQuestions as any[]).map((g): Question => ({
+                            id: `gen-${new Date().toISOString()}-${Math.random()}`, text: g.text!, answer: g.answer,
+                            image_data_url: g.image_data_url, class: selectedClass, chapter: g.chapter, marks: g.marks,
+                            difficulty: settings.aiDifficulty, used_in: [], source: QuestionSource.Generated,
+                            year: year, semester: semester, tags: settings.aiKeywords.split(',').map(t => t.trim()).filter(Boolean),
+                        }));
+                        finalQuestions.push(...newQuestions);
+                        existingQuestionPool.push(...newQuestions);
+                    }
+                    if (groundingChunks) allGroundingChunks.push(...groundingChunks);
+                }
+
+                // 2. Concurrently generate image-based questions
+                if (hasImageQuestions) {
+                    const imageQuestionPromises = distribution.map(({ count, marks }) => {
+                        if (count > 0) {
+                            return generateQuestionsAI({
+                                class: selectedClass, subject: selectedSubject, chapter: settings.aiChapters[0], marks,
+                                difficulty: settings.aiDifficulty, count: count, questionType: 'Image-based',
+                                keywords: settings.aiKeywords, generateAnswer: settings.aiGenerateAnswers,
+                                wbbseSyllabusOnly: settings.wbbseSyllabusOnly, lang: lang,
+                            }, existingQuestionPool, userApiKey, userOpenApiKey, signal);
+                        }
+                        return Promise.resolve({ generatedQuestions: [], groundingChunks: [] });
+                    });
+
+                    const imageQuestionResults = await Promise.all(imageQuestionPromises);
+
+                    imageQuestionResults.forEach((result, index) => {
+                        if (!result || !result.generatedQuestions) return;
+                        const { generatedQuestions } = result;
+                        if (generatedQuestions.length > 0) {
+                            const { marks } = distribution[index];
+                            const newQuestions = generatedQuestions.map((g): Question => ({
+                                id: `gen-img-${new Date().toISOString()}-${Math.random()}`, text: g.text!, answer: g.answer,
+                                image_data_url: g.image_data_url, class: selectedClass, chapter: settings.aiChapters[0], marks: marks,
+                                difficulty: settings.aiDifficulty, used_in: [], source: QuestionSource.Generated,
+                                year: year, semester: semester, tags: settings.aiKeywords.split(',').map(t => t.trim()).filter(Boolean),
+                            }));
+                            finalQuestions.push(...newQuestions);
+                            existingQuestionPool.push(...newQuestions);
+                        }
+                    });
+                }
+
+                const grounding_sources = allGroundingChunks
+                    ?.map((chunk: any) => chunk.web)
+                    .filter(Boolean)
+                    .map((source: any) => ({ uri: source.uri, title: source.title }))
+                    .filter((source, index, self) => index === self.findIndex(s => s.uri === source.uri));
+
+
+                const paper = createPaper(finalQuestions, QuestionSource.Generated, grounding_sources);
+                onSavePaper(paper);
+                setGeneratedPaper(paper);
             } else {
                 const result = generateFromBank(distribution);
                 if ('error' in result) {
@@ -543,10 +513,46 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                 }
             }
         } catch (error: any) {
-            console.error("Error generating paper:", error);
-            showToast('Paper generation failed. Check your settings.', 'error');
+            if (error.name === 'AbortError') {
+                console.log("Generation aborted.");
+                showToast('Generation cancelled.', 'success');
+            } else {
+                console.error("Error generating paper with AI:", error);
+
+                if (typeof error.message === 'string' && error.message.includes("API Key is not configured")) {
+                    showToast(error.message, 'error');
+                    return;
+                }
+
+                const fallbackResult = generateFromBank(distribution);
+
+                if ('error' in fallbackResult) {
+                    let isQuotaError = false;
+                    const errorDetails = error?.error || error;
+                    const messageText = String(error?.message || errorDetails?.message || '').toLowerCase();
+                    
+                    if (
+                        errorDetails?.status === 'RESOURCE_EXHAUSTED' ||
+                        errorDetails?.code === 429 ||
+                        messageText.includes('quota') ||
+                        messageText.includes('rate limit')
+                    ) {
+                        isQuotaError = true;
+                    }
+
+                    const aiErrorMessage = isQuotaError ? t('apiQuotaError', lang) : t('apiError', lang);
+                    showToast(`${aiErrorMessage}. ${fallbackResult.error}`, 'error');
+                    
+                } else {
+                    showToast(t('fallbackToBank', lang), 'success');
+                    const paper = createPaper(fallbackResult.questions, QuestionSource.Manual);
+                    onSavePaper(paper);
+                    setGeneratedPaper(paper);
+                }
+            }
         } finally {
             setIsGenerating(false);
+            abortControllerRef.current = null;
         }
     };
 
@@ -1233,7 +1239,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                                                 onClick={() => openImageViewer(q.image_data_url!)}
                                             />
                                         )}
-                                        <p><strong>{index + 1}.</strong> {q.text} <span className="text-sm text-slate-500">({q.marks} {t('marks', lang)})</span></p>
+                                        <p><strong>{index + 1}.</strong> {q.text} <span className="text-sm text-slate-500">({q.marks} ${t('marks', lang)})</span></p>
                                     </div>
                                 ))}
                             </div>

@@ -1,11 +1,11 @@
-
-import React, { useState, useMemo, ChangeEvent, useRef, useEffect } from 'react';
-import { Paper, QuestionSource, Semester, UploadProgress, Language } from '../types';
+import React, { useState, useMemo, ChangeEvent, useRef, useEffect, useCallback } from 'react';
+import { Paper, QuestionSource, Semester, UploadProgress, Language, Question } from '../types';
 import { t } from '../utils/localization';
 import Modal from './Modal';
-import { CLASSES, SEMESTERS, YEARS } from '../constants';
+import { CLASSES, SEMESTERS, YEARS, BOARDS } from '../constants';
 import { getBengaliFontBase64, getDevanagariFontBase64, getKannadaFontBase64 } from '../utils/fontData';
 import { loadScript } from '../utils/scriptLoader';
+import { getSubjectsAI } from '../services/geminiService';
 
 // --- Start of Embedded MarkdownRenderer Component ---
 declare global {
@@ -27,149 +27,263 @@ const MarkdownRenderer: React.FC<{ content: string }> = ({ content }) => {
 interface ExamArchiveProps {
   papers: Paper[];
   onDeletePaper: (id: string) => void;
-  onUploadPaper: (paper: Paper, files: FileList, onProgress: (progress: UploadProgress | null) => void, options: { signal: AbortSignal }) => Promise<void>;
+  onUploadPaper: (paper: Paper, files: FileList, onProgress: (progress: UploadProgress | null) => void, options: { signal: AbortSignal }) => Promise<Paper>;
+  onProcessPaper: (paper: Paper, files: FileList) => Promise<void>;
   lang: Language;
-  onFileImport: (e: React.ChangeEvent<HTMLInputElement>, fileType: 'pdf' | 'csv' | 'txt' | 'image') => void;
-  isProcessingFile: boolean;
   showToast: (message: string, type?: 'success' | 'error') => void;
+  viewingPaper: Paper | null;
+  setViewingPaper: (paper: Paper | null) => void;
+  userApiKey?: string;
+  userOpenApiKey?: string;
 }
 
-const PaperItem: React.FC<{ paper: Paper; onDelete: () => void; onView: () => void; lang: Language }> = ({ paper, onDelete, onView, lang }) => (
-    <div className="flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 transition-colors">
-        <div>
-            <p className="font-semibold text-slate-800">{paper.title}</p>
-            <p className="text-sm text-slate-500">{t(paper.source, lang)} - {new Date(paper.created_at).toLocaleString()}</p>
-        </div>
-        <div className="space-x-3">
-            <button onClick={onView} className="text-indigo-600 hover:text-indigo-800 text-sm font-semibold">{t('view', lang)}</button>
-            <button onClick={onDelete} className="text-red-600 hover:text-red-800 text-sm font-semibold">{t('delete', lang)}</button>
-        </div>
-    </div>
-);
+const EXAM_ARCHIVE_CURRICULUM_KEY = 'eduquest_exam_archive_curriculum_prefs_v1';
 
-const initialUploadState = {
-  title: '',
-  year: new Date().getFullYear(),
-  class: 10,
-  semester: Semester.First,
+const getInitialUploadState = () => {
+    try {
+        const saved = localStorage.getItem(EXAM_ARCHIVE_CURRICULUM_KEY);
+        if (saved) {
+            const parsed = JSON.parse(saved);
+            // Ensure all keys are present by merging with a default structure
+            return {
+                title: '',
+                year: parsed.year || new Date().getFullYear(),
+                class: parsed.class || 10,
+                semester: parsed.semester || Semester.First,
+                board: parsed.board || 'WBBSE',
+                subject: parsed.subject || '', // Default to empty, will be updated by useEffect
+            };
+        }
+    } catch (e) {
+        console.warn("Could not parse saved curriculum prefs", e);
+    }
+    // Default state if nothing is saved or parsing fails
+    return {
+      title: '',
+      year: new Date().getFullYear(),
+      class: 10,
+      semester: Semester.First,
+      board: 'WBBSE',
+      subject: '', // Default to empty, will be updated by useEffect
+    };
 };
 
-type ActionButtonType = 'pdf' | 'csv' | 'txt' | 'image' | 'word';
 
-const ActionButton: React.FC<{
-    onClick: () => void,
-    disabled: boolean,
-    isAnimating: boolean,
-    emoji: string,
-    label: string,
-    gradient: string
-}> = ({ onClick, disabled, isAnimating, emoji, label, gradient }) => (
-    <button
-        onClick={onClick}
-        disabled={disabled}
-        className={`flex flex-col items-center justify-center p-2 rounded-lg text-white shadow-md transform transition-all duration-300 hover:scale-105 hover:shadow-lg focus:outline-none focus:ring-4 focus:ring-opacity-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 w-16 h-16 ${gradient}`}
-    >
-        <span className={`text-xl ${isAnimating ? 'animate-pulse-once' : ''}`}>{emoji}</span>
-        <span className="text-xs font-bold mt-1">{label}</span>
-    </button>
-);
+const PAPERS_PER_PAGE = 15;
+const MAX_FILES = 5;
+const MAX_FILE_SIZE_MB = 10;
+const ACCEPTED_MIME_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'text/plain', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/csv'];
 
+interface IndividualFileProgress {
+  name: string;
+  status: 'pending' | 'uploading' | 'completed' | 'failed';
+}
 
-const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUploadPaper, lang, onFileImport, isProcessingFile, showToast }) => {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUploadPaper, onProcessPaper, lang, showToast, viewingPaper, setViewingPaper, userApiKey, userOpenApiKey }) => {
   const [isUploadModalOpen, setUploadModalOpen] = useState(false);
-  const [uploadData, setUploadData] = useState(initialUploadState);
-  const [viewingPaper, setViewingPaper] = useState<Paper | null>(null);
+  const [uploadData, setUploadData] = useState(getInitialUploadState);
+  const [subjects, setSubjects] = useState<string[]>([]);
+  const [loadingSubjects, setLoadingSubjects] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
-  const [animatingButton, setAnimatingButton] = useState<ActionButtonType | null>(null);
-  const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
-  const actionMenuRef = useRef<HTMLDivElement>(null);
-  
-  const pdfUploadRef = useRef<HTMLInputElement>(null);
-  const csvUploadRef = useRef<HTMLInputElement>(null);
-  const txtUploadRef = useRef<HTMLInputElement>(null);
-  const imageUploadRef = useRef<HTMLInputElement>(null);
+  const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [individualFileProgress, setIndividualFileProgress] = useState<IndividualFileProgress[]>([]);
 
-  type PaperGroup = { year: number; classNum: number; semester: Semester; papers: Paper[] };
+
+  // New state for multi-level navigation and filtering
+  const [selectedClass, setSelectedClass] = useState<number | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterYear, setFilterYear] = useState<number | ''>('');
+  const [filterSemester, setFilterSemester] = useState<Semester | ''>('');
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const modalFileInputRef = useRef<HTMLInputElement>(null);
+  const quickUploadInputRef = useRef<HTMLInputElement>(null);
+
+  const stableShowToast = useCallback(showToast, []);
+
+  // Persist curriculum settings to local storage, excluding the ephemeral title.
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { title, ...curriculumData } = uploadData;
+    localStorage.setItem(EXAM_ARCHIVE_CURRICULUM_KEY, JSON.stringify(curriculumData));
+  }, [uploadData]);
+
 
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-        if (actionMenuRef.current && !actionMenuRef.current.contains(event.target as Node)) {
-            setIsActionMenuOpen(false);
-        }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+    if (!isUploadModalOpen) return;
 
-  const triggerAnimation = (type: ActionButtonType) => {
-    setAnimatingButton(type);
-    setTimeout(() => setAnimatingButton(null), 500); // Animation duration
-  };
+    setLoadingSubjects(true);
+    getSubjectsAI(uploadData.board, uploadData.class, lang, userApiKey, userOpenApiKey)
+        .then(subjectList => {
+            setSubjects(subjectList);
+            // Ensure a subject is selected, especially if the current one is invalid or empty.
+            const hasValidSubject = subjectList.includes(uploadData.subject);
+            if (!hasValidSubject && subjectList.length > 0) {
+                setUploadData(prev => ({...prev, subject: subjectList[0]})); // Pick the first available subject
+            } else if (subjectList.length === 0) {
+                setUploadData(prev => ({...prev, subject: ''})); // No subjects, ensure it's empty
+            }
+            // If hasValidSubject is true, keep the existing uploadData.subject.
+        })
+        .catch((err) => {
+            stableShowToast(err.message || "Could not fetch subjects.", 'error');
+            setSubjects([]); // Clear subjects on error to avoid stale data
+            setUploadData(prev => ({...prev, subject: ''})); // Ensure subject is cleared on error
+        })
+        .finally(() => {
+            setLoadingSubjects(false); // This is crucial to prevent getting stuck
+        });
+  }, [isUploadModalOpen, uploadData.board, uploadData.class, lang, userApiKey, userOpenApiKey, stableShowToast, uploadData.subject]);
 
-  const handleActionClick = (type: ActionButtonType) => {
-    triggerAnimation(type);
-    switch (type) {
-        case 'pdf': pdfUploadRef.current?.click(); break;
-        case 'csv': csvUploadRef.current?.click(); break;
-        case 'txt': txtUploadRef.current?.click(); break;
-        case 'image': imageUploadRef.current?.click(); break;
-        case 'word': showToast(t('wordSupportComingSoon', lang), 'success'); break;
-    }
-  };
 
-  const groupedPapers = useMemo(() => {
-    return papers.reduce((acc, paper) => {
-      const year = paper.year;
+  // Reset filters when changing class or going back
+  useEffect(() => {
+    setCurrentPage(1);
+    setSearchTerm('');
+    setFilterYear('');
+    setFilterSemester('');
+  }, [selectedClass]);
+
+  const papersByClass = useMemo(() => {
+    const grouped = papers.reduce((acc, paper) => {
       const classNum = paper.class;
-      const semester = paper.semester;
-      const key = `${year}-${classNum}-${semester}`;
-      if (!acc[key]) {
-        acc[key] = { year, classNum, semester, papers: [] };
+      if (!acc[classNum]) {
+        acc[classNum] = [];
       }
-      acc[key].papers.push(paper);
+      acc[classNum].push(paper);
       return acc;
-    }, {} as Record<string, PaperGroup>);
+    }, {} as Record<number, Paper[]>);
+
+    return Object.keys(grouped)
+      .map(Number)
+      .sort((a, b) => a - b)
+      .map(classNum => ({
+        classNum,
+        count: grouped[classNum].length,
+      }));
   }, [papers]);
 
-  const sortedGroups = (Object.values(groupedPapers) as PaperGroup[]).sort((a,b) => b.year - a.year || b.classNum - a.classNum);
+  const filteredAndPaginatedPapers = useMemo(() => {
+    if (!selectedClass) return { paginatedPapers: [], totalPages: 0 };
 
-  const toggleExpand = (key: string) => {
-    setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
-  };
+    const papersForClass = papers.filter(p => p.class === selectedClass);
+    
+    const filtered = papersForClass.filter(paper => {
+      const searchTermMatch = !searchTerm || paper.title.toLowerCase().includes(searchTerm.toLowerCase());
+      const yearMatch = !filterYear || paper.year === filterYear;
+      const semesterMatch = !filterSemester || paper.semester === filterSemester;
+      return searchTermMatch && yearMatch && semesterMatch;
+    }).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    const totalPages = Math.ceil(filtered.length / PAPERS_PER_PAGE);
+    const startIndex = (currentPage - 1) * PAPERS_PER_PAGE;
+    const paginatedPapers = filtered.slice(startIndex, startIndex + PAPERS_PER_PAGE);
+
+    return { paginatedPapers, totalPages, totalCount: filtered.length };
+  }, [selectedClass, papers, searchTerm, filterYear, filterSemester, currentPage]);
+
+  const uniqueYearsInClass = useMemo(() => {
+    if (!selectedClass) return [];
+    const years = new Set(papers.filter(p => p.class === selectedClass).map(p => p.year));
+    return Array.from(years).sort((a, b) => Number(b) - Number(a));
+  }, [papers, selectedClass]);
   
-  const expandAll = () => {
-    const allKeys = sortedGroups.reduce((acc, group) => ({...acc, [`${group.year}-${group.classNum}-${group.semester}`]: true}), {});
-    setExpanded(allKeys);
-  }
-  
-  const collapseAll = () => {
-    setExpanded({});
-  }
-  
+
   const openUploadModal = () => {
-    setUploadData(initialUploadState);
+    // Only reset fields that should be cleared for a new upload.
+    // Curriculum is preserved from the state which is loaded from localStorage.
+    setUploadData(prev => ({ ...prev, title: '' }));
+    setSelectedFiles(null);
     setUploadProgress(null);
+    setIndividualFileProgress([]); // Clear individual file progress
     setIsCancelling(false);
     setUploadModalOpen(true);
   };
+  
+  const handleQuickUploadClick = () => {
+    quickUploadInputRef.current?.click();
+  };
 
-  const handleFilesSelectAndUpload = async (e: ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  const handleQuickUploadFileSelection = (e: ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+        setSelectedFiles(e.target.files);
+        setIndividualFileProgress(Array.from(e.target.files).map(file => ({
+            name: (file as File).name,
+            status: 'pending'
+        })));
+        setUploadModalOpen(true);
+    }
+  };
+
+  const handleFileSelection = (e: ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+        setSelectedFiles(e.target.files);
+        setIndividualFileProgress(Array.from(e.target.files).map(file => ({
+            name: (file as File).name, 
+            status: 'pending'
+        })));
+    }
+  };
+
+  const handleDragEvents = (e: React.DragEvent<HTMLLabelElement>, type: 'enter' | 'leave' | 'drop') => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (type === 'enter') setIsDragging(true);
+      if (type === 'leave') setIsDragging(false);
+      if (type === 'drop') {
+          setIsDragging(false);
+          if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+              setSelectedFiles(e.dataTransfer.files);
+              setIndividualFileProgress(Array.from(e.dataTransfer.files).map(file => ({
+                  name: (file as File).name, 
+                  status: 'pending'
+              })));
+              if (modalFileInputRef.current) {
+                  modalFileInputRef.current.files = e.dataTransfer.files;
+              }
+          }
+      }
+  };
+
+  const handleUploadSubmit = async () => {
+    const files = selectedFiles;
+    if (!files || files.length === 0) {
+        showToast("Please select at least one file.", 'error');
+        return;
+    }
+
+    if (files.length > MAX_FILES) {
+        showToast(`You can upload a maximum of ${MAX_FILES} files at a time.`, 'error');
+        return;
+    }
+
+    for (const file of Array.from(files)) {
+        const f = file as File;
+        if (!ACCEPTED_MIME_TYPES.includes(f.type)) {
+            showToast(`File type not supported for "${f.name}".`, 'error');
+            return;
+        }
+        if (f.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+            showToast(`"${f.name}" is too large. Max size is ${MAX_FILE_SIZE_MB}MB.`, 'error');
+            return;
+        }
+    }
 
     const firstFile = files[0];
-    const titleToUse = uploadData.title.trim() || (firstFile.name.split('.').slice(0, -1).join('.') || firstFile.name);
+    const titleToUse = uploadData.title.trim() || ((firstFile as File).name.split('.').slice(0, -1).join('.') || (firstFile as File).name);
 
     const newPaper: Paper = {
-      id: new Date().toISOString(), // Use client-side generated ID for folder naming
+      id: `local-${Date.now()}`,
       title: titleToUse,
       year: uploadData.year,
       class: uploadData.class,
       semester: uploadData.semester,
+      board: uploadData.board,
+      subject: uploadData.subject,
       source: QuestionSource.Upload,
       created_at: new Date().toISOString(),
       questions: [],
@@ -180,36 +294,104 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
 
     setIsUploading(true);
     setIsCancelling(false);
-    setUploadProgress({ total: files.length, completed: 0, pending: files.length, currentFile: files[0].name });
+    setUploadProgress({ total: files.length, completed: 0, pending: files.length, currentFile: (firstFile as File).name });
+    
+    // Initial individual file statuses
+    setIndividualFileProgress(Array.from(files).map(file => ({
+        name: (file as File).name, 
+        status: 'pending'
+    })));
 
-    let uploadOk = false;
-    try {
-      await onUploadPaper(newPaper, files, setUploadProgress, { signal: controller.signal });
-      uploadOk = true;
-    } catch (error: any) {
-        if (error.name === 'AbortError') {
-            uploadOk = true; // Cancellation is an "ok" outcome for UI flow
-            console.log('Upload cancelled by user.');
-        } else {
-          // The parent component (TeacherApp) now handles user-facing toasts.
-          // This log helps debug that an error was caught here before being re-thrown.
-          console.error("Upload failed in component:", error.message);
+    const handleProgressUpdate = (overallProgress: UploadProgress | null) => {
+        setUploadProgress(overallProgress);
+        if (overallProgress && selectedFiles) {
+            setIndividualFileProgress(prev => {
+                const fileNames = Array.from(selectedFiles).map(f => (f as File).name); 
+                const newStatuses: IndividualFileProgress[] = fileNames.map((name, index) => {
+                    const existingStatus = prev.find(item => item.name === name) || { name, status: 'pending' };
+
+                    if (overallProgress.error) {
+                        const erroredFileIndex = fileNames.indexOf(overallProgress.currentFile);
+                        if (index < erroredFileIndex) { 
+                            return { ...existingStatus, status: 'completed' };
+                        } else if (index === erroredFileIndex) { 
+                            return { ...existingStatus, status: 'failed' };
+                        } else { 
+                            return { ...existingStatus, status: 'failed' }; 
+                        }
+                    } else {
+                        if (index < overallProgress.completed) {
+                            return { ...existingStatus, status: 'completed' };
+                        } else if (index === overallProgress.completed && overallProgress.completed < overallProgress.total) {
+                            return { ...existingStatus, status: 'uploading' };
+                        }
+                    }
+                    return existingStatus; 
+                });
+                
+                if (!overallProgress.error && overallProgress.completed === overallProgress.total) {
+                    return newStatuses.map(s => ({ ...s, status: 'completed' }));
+                }
+                return newStatuses;
+            });
         }
-    } finally {
-      setIsUploading(false);
-      setIsCancelling(false);
-      // Only close the modal automatically if the process completed successfully or was cancelled.
-      if (uploadOk) {
-          await new Promise(resolve => setTimeout(resolve, 1000)); // Show 100% for a moment
-          setUploadModalOpen(false);
-          setUploadProgress(null);
-      }
-      uploadAbortControllerRef.current = null;
+    };
+
+
+    let savedPaper: Paper | null = null;
+    try {
+      savedPaper = await onUploadPaper(newPaper, files, handleProgressUpdate, { signal: controller.signal });
+    } catch (error: unknown) {
+        console.error("RAW UPLOAD ERROR:", error);
+
+        if (error instanceof DOMException && error.name === 'AbortError') {
+            console.log('Upload cancelled by user.');
+            showToast("Upload cancelled.", "success");
+        } else {
+            let actualErrorMessage = "An unknown error occurred during upload. Please check the developer console (F12) for details.";
+            if (error instanceof Error) {
+                actualErrorMessage = error.message;
+            } else if (typeof error === 'object' && error !== null && 'message' in error) {
+                actualErrorMessage = String(error.message);
+            }
+            
+            if (actualErrorMessage.includes('Auth') || actualErrorMessage.includes('JWT') || actualErrorMessage.includes('permission denied')) {
+                actualErrorMessage += ". This often indicates incorrect Supabase Storage policies or an invalid API key.";
+            } else if (actualErrorMessage.includes('CORS')) {
+                actualErrorMessage += ". Please check your Supabase Storage bucket's CORS configuration.";
+            } else if (actualErrorMessage.includes('Failed to fetch') || actualErrorMessage.includes('Network request failed')) {
+                 actualErrorMessage = "Network error: Could not reach the server. Please check your internet connection, disable any ad-blockers, or try again later.";
+            }
+
+            setUploadProgress(prev => ({ ...prev!, error: actualErrorMessage }));
+            handleProgressUpdate(uploadProgress ? { ...uploadProgress, error: actualErrorMessage } : null);
+        }
+        
+        setIsUploading(false);
+        setIsCancelling(false);
+        uploadAbortControllerRef.current = null;
+        if (error instanceof DOMException && error.name === 'AbortError') {
+             setUploadModalOpen(false);
+             setUploadProgress(null);
+             setIndividualFileProgress([]);
+        }
+        return;
+    }
+    
+    setIsUploading(false);
+    setIsCancelling(false);
+    uploadAbortControllerRef.current = null;
+    setUploadModalOpen(false);
+    setUploadProgress(null);
+    setIndividualFileProgress([]);
+
+    if (savedPaper) {
+        onProcessPaper(savedPaper, files);
     }
   };
 
   const handleCancelUpload = () => {
-    if (uploadAbortControllerRef.current) {
+    if (uploadAbortControllerRef.current && !isCancelling) {
         setIsCancelling(true);
         uploadAbortControllerRef.current.abort();
     }
@@ -222,7 +404,6 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
         await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
     } catch (error) {
         console.error("Failed to load jsPDF library", error);
-        // You might want to show a toast message to the user here.
         return;
     }
 
@@ -232,31 +413,13 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
     let fontName = 'helvetica';
     if (lang === 'bn') {
         const fontData = await getBengaliFontBase64();
-        if (fontData) {
-            doc.addFileToVFS('NotoSansBengali-Regular.ttf', fontData);
-            doc.addFont('NotoSansBengali-Regular.ttf', 'NotoSansBengali', 'normal');
-            fontName = 'NotoSansBengali';
-        } else {
-            console.error('Could not load Bengali font for PDF.');
-        }
+        if (fontData) { doc.addFileToVFS('NotoSansBengali-Regular.ttf', fontData); doc.addFont('NotoSansBengali-Regular.ttf', 'NotoSansBengali', 'normal'); fontName = 'NotoSansBengali'; }
     } else if (lang === 'hi') {
         const fontData = await getDevanagariFontBase64();
-        if (fontData) {
-            doc.addFileToVFS('NotoSansDevanagari-Regular.ttf', fontData);
-            doc.addFont('NotoSansDevanagari-Regular.ttf', 'NotoSansDevanagari', 'normal');
-            fontName = 'NotoSansDevanagari';
-        } else {
-            console.error('Could not load Hindi font for PDF.');
-        }
+        if (fontData) { doc.addFileToVFS('NotoSansDevanagari-Regular.ttf', fontData); doc.addFont('NotoSansDevanagari-Regular.ttf', 'NotoSansDevanagari', 'normal'); fontName = 'NotoSansDevanagari'; }
     } else if (lang === 'ka') {
         const fontData = await getKannadaFontBase64();
-        if (fontData) {
-            doc.addFileToVFS('NotoSansKannada-Regular.ttf', fontData);
-            doc.addFont('NotoSansKannada-Regular.ttf', 'NotoSansKannada', 'normal');
-            fontName = 'NotoSansKannada';
-        } else {
-            console.error('Could not load Kannada font for PDF.');
-        }
+        if (fontData) { doc.addFileToVFS('NotoSansKannada-Regular.ttf', fontData); doc.addFont('NotoSansKannada-Regular.ttf', 'NotoSansKannada', 'normal'); fontName = 'NotoSansKannada'; }
     }
 
     const pageHeight = doc.internal.pageSize.getHeight();
@@ -265,12 +428,7 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
     const maxLineWidth = pageWidth - margin * 2;
     let y = margin;
 
-    const checkPageBreak = (neededHeight: number) => {
-        if (y + neededHeight > pageHeight - margin) {
-            doc.addPage();
-            y = margin;
-        }
-    };
+    const checkPageBreak = (neededHeight: number) => { if (y + neededHeight > pageHeight - margin) { doc.addPage(); y = margin; } };
     
     doc.setFontSize(14);
     doc.setFont(fontName, 'bold');
@@ -296,20 +454,15 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
     if (paper.questions.length > 0) {
         paper.questions.forEach((q, index) => {
             const questionText = `${index + 1}. ${q.text} (${q.marks} ${t('marks', lang)})`;
-            
             if (q.image_data_url) {
                 try {
                     const imgProps = doc.getImageProperties(q.image_data_url);
-                    const imgWidth = 80;
-                    const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
+                    const imgWidth = 80; const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
                     checkPageBreak(imgHeight + 5);
                     doc.addImage(q.image_data_url, 'JPEG', margin, y, imgWidth, imgHeight);
                     y += imgHeight + 5;
-                } catch(e) {
-                    console.error("Error adding image to PDF:", e);
-                }
+                } catch(e) { console.error("Error adding image to PDF:", e); }
             }
-
             const lines = doc.splitTextToSize(questionText, maxLineWidth);
             const textHeight = lines.length * 4.5;
             checkPageBreak(textHeight + 3);
@@ -318,19 +471,13 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
         });
     }
 
-    if (paper.grounding_sources && paper.grounding_sources.length > 0) {
-        const sourcesTitle = t('sources', lang);
-        checkPageBreak(8 + 3 + 4.5);
+    if (paper.grounding_sources?.length) {
         y += 8;
-        doc.setFontSize(12);
-        doc.setFont(fontName, 'bold');
-        doc.text(sourcesTitle, margin, y);
-        y += 6 + 2;
-        doc.setFontSize(8);
-        doc.setFont(fontName, 'normal');
+        doc.setFontSize(12); doc.setFont(fontName, 'bold');
+        doc.text(t('sources', lang), margin, y); y += 8;
+        doc.setFontSize(8); doc.setFont(fontName, 'normal');
         paper.grounding_sources.forEach(source => {
-            const sourceText = `${source.title || 'Untitled'}: ${source.uri}`;
-            const lines = doc.splitTextToSize(sourceText, maxLineWidth);
+            const lines = doc.splitTextToSize(`${source.title || 'Untitled'}: ${source.uri}`, maxLineWidth);
             const textHeight = lines.length * 4;
             checkPageBreak(textHeight + 2);
             doc.textWithLink(source.title || source.uri, margin, y, { url: source.uri });
@@ -339,21 +486,14 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
     }
 
     const questionsWithAnswers = paper.questions.filter(q => q.answer);
-    if (questionsWithAnswers.length > 0) {
-        const answerKeyTitle = t('answerKey', lang);
-        checkPageBreak(8 + 3 + 4.5);
+    if (questionsWithAnswers.length) {
         y += 8;
-        doc.setFontSize(12);
-        doc.setFont(fontName, 'bold');
-        doc.text(answerKeyTitle, margin, y);
-        y += 6 + 2;
-        doc.setFontSize(10);
-        doc.setFont(fontName, 'normal');
-
+        doc.setFontSize(12); doc.setFont(fontName, 'bold');
+        doc.text(t('answerKey', lang), margin, y); y += 8;
+        doc.setFontSize(10); doc.setFont(fontName, 'normal');
         questionsWithAnswers.forEach((q) => {
             const answerIndex = paper.questions.findIndex(pq => pq.id === q.id) + 1;
-            const answerText = `${answerIndex}. ${q.answer}`;
-            const lines = doc.splitTextToSize(answerText, maxLineWidth);
+            const lines = doc.splitTextToSize(`${answerIndex}. ${q.answer}`, maxLineWidth);
             const textHeight = lines.length * 4.5;
             checkPageBreak(textHeight + 2);
             doc.text(lines, margin, y);
@@ -364,83 +504,14 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
     doc.save(`${paper.title.replace(/ /g, '_')}.pdf`);
   };
 
-  const handleExportTXT = (paper: Paper) => {
-    if (!paper) return;
-
-    let content = `${paper.title}\n`;
-    content += `Class: ${paper.class}, Year: ${paper.year}, Semester: ${paper.semester}\n`;
-    content += `Source: ${t(paper.source, lang)}\n`;
-    content += '====================================\n\n';
-
-    if (paper.text) {
-        content += paper.text + '\n\n';
-    }
-
-    if (paper.questions.length > 0) {
-        content += `Total Marks: ${paper.questions.reduce((acc, q) => acc + q.marks, 0)}\n\n`;
-        paper.questions.forEach((q, index) => {
-            content += `${index + 1}. ${q.text} (${q.marks} ${t('marks', lang)})\n\n`;
-            if (q.image_data_url) {
-                content += `[Image-based question. Image not included in text export.]\n\n`;
-            }
-        });
-    }
-
-    const questionsWithAnswers = paper.questions.filter(q => q.answer);
-    if (questionsWithAnswers.length > 0) {
-        content += '====================================\n';
-        content += `${t('answerKey', lang)}\n`;
-        content += '====================================\n\n';
-        questionsWithAnswers.forEach((q) => {
-            const answerIndex = paper.questions.findIndex(pq => pq.id === q.id) + 1;
-            content += `${answerIndex}. ${q.answer}\n`;
-        });
-        content += '\n';
-    }
-
-    if (paper.grounding_sources && paper.grounding_sources.length > 0) {
-        content += '====================================\n';
-        content += `${t('sources', lang)}\n`;
-        content += '====================================\n\n';
-        paper.grounding_sources.forEach(source => {
-            content += `${source.title || 'Untitled'}: ${source.uri}\n`;
-        });
-        content += '\n';
-    }
-
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `${paper.title.replace(/ /g, '_')}.txt`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-    
   const handleExportWord = async (paper: Paper) => {
     if (!paper) return;
 
-    try {
-        await loadScript("https://cdn.jsdelivr.net/npm/marked/marked.min.js");
-    } catch (error) {
-        showToast("Failed to load export library.", "error");
-        return;
-    }
-    if (!window.marked) {
-        showToast("Export library not available.", "error");
-        return;
-    }
+    try { await loadScript("https://cdn.jsdelivr.net/npm/marked/marked.min.js"); }
+    catch (error) { showToast("Failed to load export library.", "error"); return; }
+    if (!window.marked) { showToast("Export library not available.", "error"); return; }
 
-    let htmlContent = `
-        <html>
-            <head><meta charset="UTF-8"></head>
-            <body>
-                <h1 style="text-align: center;">${paper.title}</h1>
-                <p><strong>Class:</strong> ${paper.class}, <strong>Year:</strong> ${paper.year}, <strong>Semester:</strong> ${paper.semester}</p>
-                <hr />
-    `;
+    let htmlContent = `<html><head><meta charset="UTF-8"></head><body><h1>${paper.title}</h1><p>Class: ${paper.class}, Year: ${paper.year}, Semester: ${paper.semester}</p><hr />`;
     
     const urls = paper.data_urls || (paper.data_url ? [paper.data_url] : []);
     const types = paper.file_types || (paper.file_type ? [paper.file_type] : []);
@@ -450,146 +521,106 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
         }
     });
 
-    if (paper.text) {
-        htmlContent += window.marked.parse(paper.text);
-    }
+    if (paper.text) htmlContent += window.marked.parse(paper.text);
 
     if (paper.questions.length > 0) {
         paper.questions.forEach((q, index) => {
-            htmlContent += `
-                <p><strong>${index + 1}.</strong> ${q.text} <em>(${q.marks} ${t('marks', lang)})</em></p>
-            `;
-            if (q.image_data_url) {
-                htmlContent += `<p><img src="${q.image_data_url}" alt="Question Image" style="max-width: 400px; height: auto;" /></p>`;
-            }
+            htmlContent += `<p><strong>${index + 1}.</strong> ${q.text} <em>(${q.marks} ${t('marks', lang)})</em></p>`;
+            if (q.image_data_url) htmlContent += `<p><img src="${q.image_data_url}" alt="Question Image" style="max-width: 400px; height: auto;" /></p>`;
         });
 
         if (paper.questions.some(q => q.answer)) {
-            htmlContent += `
-                <hr />
-                <h2>${t('answerKey', lang)}</h2>
-            `;
+            htmlContent += `<hr /><h2>${t('answerKey', lang)}</h2>`;
             paper.questions.forEach((q, index) => {
-                if (q.answer) {
-                    htmlContent += `<p><strong>${index + 1}.</strong> ${q.answer}</p>`;
-                }
+                if (q.answer) htmlContent += `<p><strong>${index + 1}.</strong> ${q.answer}</p>`;
             });
         }
     }
 
-    if (paper.grounding_sources && paper.grounding_sources.length > 0) {
-        htmlContent += `
-            <hr />
-            <h2>${t('sources', lang)}</h2>
-        `;
-        paper.grounding_sources.forEach(source => {
-            htmlContent += `<p><a href="${source.uri}">${source.title || source.uri}</a></p>`;
-        });
+    if (paper.grounding_sources?.length) {
+        htmlContent += `<hr /><h2>${t('sources', lang)}</h2>`;
+        paper.grounding_sources.forEach(source => { htmlContent += `<p><a href="${source.uri}">${source.title || source.uri}</a></p>`; });
     }
 
     htmlContent += '</body></html>';
-
     const blob = new Blob([`\ufeff${htmlContent}`], { type: 'application/msword' });
     const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.href = url;
+    link.href = URL.createObjectURL(blob);
     link.download = `${paper.title.replace(/ /g, '_')}.doc`;
-    document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(link.href);
   };
+  
+  const renderClassSelection = () => (
+    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+        {papersByClass.map(({ classNum, count }) => (
+            <button key={classNum} onClick={() => setSelectedClass(classNum)}
+                className="flex flex-col items-center justify-center p-6 bg-white rounded-xl shadow-sm border border-slate-200 hover:border-indigo-400 hover:ring-2 hover:ring-indigo-200 transition-all transform hover:-translate-y-1">
+                <span className="text-4xl font-bold font-serif-display text-indigo-600">{classNum}</span>
+                <span className="text-lg font-semibold text-slate-700 mt-1">Class {classNum}</span>
+                <span className="text-sm text-slate-500">{count} {count === 1 ? 'Paper' : 'Papers'}</span>
+            </button>
+        ))}
+    </div>
+  );
 
-  const handleExportXLSX = async (paper: Paper) => {
-    if (!paper) return;
+  const renderPaperList = () => (
+    <div className="bg-white p-4 sm:p-6 rounded-xl shadow-sm border border-slate-200">
+        <div className="flex items-center mb-4">
+            <button onClick={() => setSelectedClass(null)} className="flex items-center text-indigo-600 font-semibold hover:text-indigo-800 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l-4-4a1 1 0 011.414 0z" clipRule="evenodd" /></svg>
+                Back
+            </button>
+            <h3 className="flex-grow text-center font-bold text-xl text-slate-800">Archive for Class {selectedClass}</h3>
+        </div>
 
-    try {
-        await loadScript("https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js");
-    } catch (error) {
-        console.error("Failed to load XLSX library", error);
-        return;
-    }
+        {/* Filters */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4 p-3 bg-slate-50 rounded-lg border">
+            <input type="text" placeholder="Search by title..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full p-2 border border-slate-300 bg-white rounded-lg" />
+            <select value={filterYear} onChange={e => setFilterYear(e.target.value ? Number(e.target.value) : '')} className="w-full p-2 border rounded-lg bg-white">
+                <option value="">All Years</option>
+                {uniqueYearsInClass.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <select value={filterSemester} onChange={e => setFilterSemester(e.target.value as Semester | '')} className="w-full p-2 border rounded-lg bg-white">
+                <option value="">All Semesters</option>
+                {SEMESTERS.map(s => <option key={s} value={s}>Sem {s}</option>)}
+            </select>
+        </div>
 
-    const XLSX = (window as any).XLSX;
-    const wb = XLSX.utils.book_new();
-
-    if (paper.questions.length > 0) {
-        const questionData = paper.questions.map((q, index) => ({
-            'No.': index + 1,
-            'Question': q.image_data_url ? `[Image-based question] ${q.text}` : q.text,
-            'Marks': q.marks,
-        }));
-        const questionSheet = XLSX.utils.json_to_sheet(questionData);
-        XLSX.utils.book_append_sheet(wb, questionSheet, 'Questions');
+        {/* Paper List */}
+        <div className="divide-y divide-slate-100">
+            {filteredAndPaginatedPapers.paginatedPapers.map(paper => (
+                <div key={paper.id} className="flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 transition-colors">
+                    <div>
+                        <p className="font-semibold text-slate-800">{paper.title}</p>
+                        <p className="text-sm text-slate-500">{t(paper.source, lang)} - {new Date(paper.created_at).toLocaleString()}</p>
+                    </div>
+                    <div className="space-x-3 flex-shrink-0">
+                        <button onClick={() => setViewingPaper(paper)} className="text-indigo-600 hover:text-indigo-800 text-sm font-semibold">{t('view', lang)}</button>
+                        <button onClick={() => onDeletePaper(paper.id)} className="text-red-600 hover:text-red-800 text-sm font-semibold">{t('delete', lang)}</button>
+                    </div>
+                </div>
+            ))}
+        </div>
         
-        const answerData = paper.questions.filter(q => q.answer).map((q) => ({
-            'No.': paper.questions.findIndex(pq => pq.id === q.id) + 1,
-            'Answer': q.answer,
-        }));
-        if (answerData.length > 0) {
-            const answerSheet = XLSX.utils.json_to_sheet(answerData);
-            XLSX.utils.book_append_sheet(wb, answerSheet, 'Answer Key');
-        }
-    }
+        {filteredAndPaginatedPapers.totalCount === 0 && (
+            <div className="text-center py-10 text-slate-500"><p>No papers match your filters.</p></div>
+        )}
 
-    if (paper.text) {
-        const textData = [{ Title: paper.title, Content: paper.text }];
-        const textSheet = XLSX.utils.json_to_sheet(textData);
-        XLSX.utils.book_append_sheet(wb, textSheet, 'Text Content');
-    }
-
-    if (paper.grounding_sources && paper.grounding_sources.length > 0) {
-        const sourceData = paper.grounding_sources.map(s => ({
-            'Title': s.title, 'URL': s.uri,
-        }));
-        const sourceSheet = XLSX.utils.json_to_sheet(sourceData);
-        XLSX.utils.book_append_sheet(wb, sourceSheet, 'Sources');
-    }
-
-    XLSX.writeFile(wb, `${paper.title.replace(/ /g, '_')}.xlsx`);
-  };
-
-  const handleExportCSV = (paper: Paper) => {
-    if (!paper) return;
-    
-    let csvRows: string[];
-
-    if (paper.questions.length > 0) {
-        const headers = ['No.', 'Question', 'Marks', 'Answer'];
-        const data = paper.questions.map((q, index) => ({
-            'No.': index + 1,
-            'Question': q.text,
-            'Marks': q.marks,
-            'Answer': q.answer || '',
-        }));
-        csvRows = [
-            headers.join(','),
-            ...data.map(row => 
-                headers.map(header => `"${String(row[header as keyof typeof row]).replace(/"/g, '""')}"`).join(',')
-            )
-        ];
-    } else if (paper.text) {
-        const headers = ['Title', 'Content'];
-        const cleanContent = paper.text.replace(/"/g, '""').replace(/\r\n|\r|\n/g, ' ');
-        csvRows = [
-            headers.join(','),
-            `"${paper.title.replace(/"/g, '""')}","${cleanContent}"`
-        ];
-    } else {
-        return; // Nothing to export
-    }
-
-    const csvString = csvRows.join('\r\n');
-    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `${paper.title.replace(/ /g, '_')}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+        {/* Pagination */}
+        {filteredAndPaginatedPapers.totalPages > 1 && (
+            <div className="flex justify-between items-center mt-4 pt-4 border-t">
+                <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}
+                    className="px-4 py-2 bg-slate-200 text-slate-800 rounded-lg hover:bg-slate-300 disabled:opacity-50">Previous</button>
+                <span className="text-sm font-semibold text-slate-600">
+                    Page {currentPage} of {filteredAndPaginatedPapers.totalPages}
+                </span>
+                <button onClick={() => setCurrentPage(p => Math.min(filteredAndPaginatedPapers.totalPages, p + 1))} disabled={currentPage === filteredAndPaginatedPapers.totalPages}
+                    className="px-4 py-2 bg-slate-200 text-slate-800 rounded-lg hover:bg-slate-300 disabled:opacity-50">Next</button>
+            </div>
+        )}
+  </div>
+  );
 
   const renderViewingPaperContent = () => {
     if (!viewingPaper) return null;
@@ -616,62 +647,17 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
             </div>
           )}
 
-          {viewingPaper.text && (
-            <div className="bg-slate-50 p-4 rounded-lg border mb-4">
-                <MarkdownRenderer content={viewingPaper.text} />
-            </div>
-          )}
-
-          {viewingPaper.questions.length > 0 && (
-            <div className="space-y-4 prose max-w-none prose-slate">
-              <div className="not-prose text-center">
-                <h2 className="text-xl font-bold font-serif-display text-slate-800">{viewingPaper.title}</h2>
-                <p className="text-sm text-slate-500">{new Date(viewingPaper.created_at).toLocaleString()}</p>
-              </div>
-              {viewingPaper.questions.map((q, i) => (
-                <div key={q.id}>
-                  {q.image_data_url && (
-                    <img src={q.image_data_url} alt="Question illustration" className="max-w-md mx-auto rounded-lg border my-2" />
-                  )}
-                  <p><strong>{i + 1}.</strong> {q.text} <span className="text-sm text-slate-500">({q.marks} {t('marks', lang)})</span></p>
-                </div>
-              ))}
-              {viewingPaper.grounding_sources && viewingPaper.grounding_sources.length > 0 && (
-                <div className="mt-8 pt-4 border-t border-slate-200">
-                  <h3 className="text-lg font-bold font-serif-display text-slate-800 mb-3">{t('sources', lang)}</h3>
-                  <ul className="prose prose-sm max-w-none prose-slate list-disc list-inside space-y-1">
-                    {viewingPaper.grounding_sources.map(source => (
-                      <li key={source.uri}>
-                        <a href={source.uri} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">
-                          {source.title || source.uri}
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {viewingPaper.questions.some(q => q.answer) && (
-                <div className="mt-8 pt-4 border-t border-slate-200">
-                  <h3 className="text-lg font-bold font-serif-display text-slate-800 mb-3">{t('answerKey', lang)}</h3>
-                  <div className="prose max-w-none prose-slate space-y-2">
-                    {viewingPaper.questions.map((q, index) => (
-                      q.answer ? (
-                        <p key={`ans-${q.id}`}><strong>{index + 1}.</strong> {q.answer}</p>
-                      ) : null
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+          {viewingPaper.text && <div className="bg-slate-50 p-4 rounded-lg border mb-4"><MarkdownRenderer content={viewingPaper.text} /></div>}
+          {viewingPaper.questions.length > 0 && <div className="space-y-4 prose max-w-none prose-slate">{viewingPaper.questions.map((q, i) => (
+            <div key={q.id}>
+                {q.image_data_url && <img src={q.image_data_url} alt="Question" className="max-w-md mx-auto rounded-lg border my-2" />}
+                <p><strong>{i + 1}.</strong> {q.text} <span className="text-sm text-slate-500">({q.marks} {t('marks', lang)})</span></p>
+            </div>))}</div>}
         </div>
         <div className="flex flex-wrap justify-end gap-3 pt-4 mt-4 border-t border-slate-200">
           {hasContentToExport && (
             <>
-              <button onClick={() => handleExportTXT(viewingPaper)} className="px-4 py-2 bg-slate-600 text-white font-semibold rounded-lg text-sm">{t('exportTXT', lang)}</button>
               <button onClick={() => handleExportWord(viewingPaper)} className="px-4 py-2 bg-blue-700 text-white font-semibold rounded-lg text-sm">{t('exportWord', lang)}</button>
-              <button onClick={() => handleExportCSV(viewingPaper)} className="px-4 py-2 bg-gray-600 text-white font-semibold rounded-lg text-sm">{t('exportCSV', lang)}</button>
-              <button onClick={() => handleExportXLSX(viewingPaper)} className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg text-sm">{t('exportXLSX', lang)}</button>
               <button onClick={() => handleExportPDF(viewingPaper)} className="px-4 py-2 bg-red-600 text-white font-semibold rounded-lg text-sm">{t('exportPDF', lang)}</button>
             </>
           )}
@@ -680,94 +666,186 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
     );
   };
   
-  const actionButtons: { type: ActionButtonType, emoji: string, label: string, gradient: string }[] = [
-    { type: 'pdf', emoji: '📄', label: t('uploadPDF', lang), gradient: 'bg-gradient-to-br from-red-500 to-orange-500 focus:ring-orange-300' },
-    { type: 'csv', emoji: '📊', label: t('uploadCSV', lang), gradient: 'bg-gradient-to-br from-green-500 to-emerald-500 focus:ring-emerald-300' },
-    { type: 'txt', emoji: '📝', label: t('uploadTXT', lang), gradient: 'bg-gradient-to-br from-blue-500 to-cyan-500 focus:ring-cyan-300' },
-    { type: 'image', emoji: '📷', label: t('scanImage', lang), gradient: 'bg-gradient-to-br from-purple-500 to-pink-500 focus:ring-pink-300' },
-    { type: 'word', emoji: '📖', label: t('uploadWord', lang), gradient: 'bg-gradient-to-br from-sky-500 to-blue-600 focus:ring-sky-300' },
-  ];
-
   const inputStyles = "w-full p-2 border rounded-lg border-slate-300 bg-slate-50 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 transition";
 
   return (
-    <div className="p-2 sm:p-4">
-      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-        <div className="flex justify-between items-center" ref={actionMenuRef}>
-            <h3 className="font-bold text-lg text-slate-800">{t('uploadNewPaper', lang)}</h3>
-            <button onClick={openUploadModal} className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white font-semibold rounded-lg shadow-sm hover:bg-indigo-700 transition-all disabled:opacity-60">
-              <span className="text-lg">➕</span>
-              <span>Upload</span>
+    <div className="p-2 sm:p-4 space-y-4">
+      {/* Hidden input for the quick upload feature */}
+      <input
+        type="file"
+        ref={quickUploadInputRef}
+        multiple
+        className="hidden"
+        onChange={handleQuickUploadFileSelection}
+        accept={ACCEPTED_MIME_TYPES.join(',')}
+      />
+
+      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex items-center justify-between">
+        <h3 className="font-bold text-lg text-slate-800">{selectedClass ? `Archive for Class ${selectedClass}` : t('archive', lang)}</h3>
+        <div className="flex gap-2">
+            <button
+                onClick={openUploadModal}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white font-semibold rounded-lg shadow-sm hover:bg-indigo-700 transition-all"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" /></svg>
+                <span>Upload Paper</span>
+            </button>
+            <button
+                onClick={handleQuickUploadClick}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white font-semibold rounded-lg shadow-sm hover:bg-green-700 transition-all"
+                title="Upload another paper"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" /></svg>
+                <span>Quick Upload</span>
             </button>
         </div>
       </div>
-      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mt-4">
-          <div className="flex justify-between items-center">
-              <h3 className="font-bold text-lg text-slate-800">{t('archive', lang)}</h3>
-              <div className="space-x-2">
-                  <button onClick={expandAll} className="text-sm font-semibold text-indigo-600">{t('expandAll', lang)}</button>
-                  <button onClick={collapseAll} className="text-sm font-semibold text-indigo-600">{t('collapseAll', lang)}</button>
-              </div>
-          </div>
-      </div>
 
-      <div className="mt-4 space-y-4">
-        {sortedGroups.map(group => {
-            const key = `${group.year}-${group.classNum}-${group.semester}`;
-            return (
-                <div key={key} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                    <button onClick={() => toggleExpand(key)} className="w-full flex justify-between items-center p-4 text-left">
-                        <h3 className="font-bold text-lg text-slate-800">Class {group.classNum} - Sem {group.semester} - {group.year}</h3>
-                         <svg xmlns="http://www.w3.org/2000/svg" className={`h-6 w-6 transition-transform ${expanded[key] ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </button>
-                    {expanded[key] && (
-                        <div className="p-2 divide-y divide-slate-100">
-                            {group.papers.map(paper => (
-                                <PaperItem key={paper.id} paper={paper} onDelete={() => onDeletePaper(paper.id)} onView={() => setViewingPaper(paper)} lang={lang} />
-                            ))}
-                        </div>
-                    )}
-                </div>
-            )
-        })}
-      </div>
+      {selectedClass === null ? renderClassSelection() : renderPaperList()}
       
-      {papers.length === 0 && <div className="text-center py-10 bg-white rounded-xl border border-dashed border-slate-300 text-slate-500 mt-4"><p>{t('noPapers', lang)}</p></div>}
+      {papers.length === 0 && !selectedClass && <div className="text-center py-10 bg-white rounded-xl border border-dashed border-slate-300 text-slate-500 mt-4"><p>{t('noPapers', lang)}</p></div>}
       
-      <Modal isOpen={isUploadModalOpen} onClose={() => setUploadModalOpen(false)} title={t('uploadNewPaper', lang)}>
-        {!isUploading ? (
+      <Modal 
+        isOpen={isUploadModalOpen} 
+        onClose={() => {
+            if (isUploading) {
+                handleCancelUpload();
+            } else {
+                setUploadModalOpen(false);
+                setUploadProgress(null);
+                setIndividualFileProgress([]);
+            }
+        }} 
+        title={t('uploadNewPaper', lang)}
+      >
+        {!uploadProgress ? (
             <div className="space-y-4">
-                <input type="text" placeholder={t('paperTitle', lang)} value={uploadData.title} onChange={(e) => setUploadData(prev => ({ ...prev, title: e.target.value }))} className={inputStyles} />
-                <div className="grid grid-cols-3 gap-4">
-                    <select value={uploadData.year} onChange={(e) => setUploadData(prev => ({ ...prev, year: parseInt(e.target.value) }))} className={inputStyles}>
-                        {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
-                    </select>
-                    <select value={uploadData.class} onChange={(e) => setUploadData(prev => ({ ...prev, class: parseInt(e.target.value) }))} className={inputStyles}>
-                        {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                    <select value={uploadData.semester} onChange={(e) => setUploadData(prev => ({ ...prev, semester: e.target.value as Semester }))} className={inputStyles}>
-                        {SEMESTERS.map(s => <option key={s} value={s}>{`Sem ${s}`}</option>)}
+                <input type="text" placeholder={`${t('paperTitle', lang)} (Optional)`} value={uploadData.title} onChange={(e) => setUploadData(prev => ({ ...prev, title: e.target.value }))} className={inputStyles} />
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-sm font-medium text-slate-600">Board</label>
+                        <select value={uploadData.board} onChange={(e) => setUploadData(prev => ({ ...prev, board: e.target.value, subject: '' }))} className={inputStyles}>
+                            {BOARDS.map(b => <option key={b} value={b}>{b}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-600">Class</label>
+                        <select value={uploadData.class} onChange={(e) => setUploadData(prev => ({ ...prev, class: parseInt(e.target.value), subject: '' }))} className={inputStyles}>
+                            {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-slate-600">Subject</label>
+                    <select value={uploadData.subject} onChange={(e) => setUploadData(prev => ({ ...prev, subject: e.target.value }))} className={inputStyles} disabled={loadingSubjects || subjects.length === 0}>
+                        {loadingSubjects ? <option>Loading subjects...</option> : subjects.length === 0 ? <option>No subjects found</option> : subjects.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                 </div>
-                <input type="file" multiple onChange={handleFilesSelectAndUpload} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"/>
-            </div>
-        ) : (
-            <div className="text-center">
-                <h3 className="font-semibold text-lg">{isCancelling ? 'Cancelling...' : t('fileUploadProgress', lang)}</h3>
-                {uploadProgress && (
-                    <div className="mt-4 space-y-2 text-sm">
-                        <p>{t('currentlyProcessing', lang)}: <span className="font-medium">{uploadProgress.currentFile}</span></p>
-                        <div className="w-full bg-slate-200 rounded-full h-2.5">
-                            <div className="bg-indigo-600 h-2.5 rounded-full" style={{ width: `${(uploadProgress.completed / uploadProgress.total) * 100}%` }}></div>
-                        </div>
-                        <p>{uploadProgress.completed} / {uploadProgress.total} {t('completed', lang)}</p>
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-sm font-medium text-slate-600">Year</label>
+                        <select value={uploadData.year} onChange={(e) => setUploadData(prev => ({ ...prev, year: parseInt(e.target.value) }))} className={inputStyles}>
+                            {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-600">Semester</label>
+                        <select value={uploadData.semester} onChange={(e) => setUploadData(prev => ({ ...prev, semester: e.target.value as Semester }))} className={inputStyles}>
+                            {SEMESTERS.map(s => <option key={s} value={s}>{`Sem ${s}`}</option>)}
+                        </select>
+                    </div>
+                </div>
+                 <label
+                    htmlFor="file-upload-archive"
+                    className={`flex flex-col items-center justify-center w-full h-48 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${isDragging ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 bg-slate-50 hover:bg-slate-100'}`}
+                    onDragEnter={(e) => handleDragEvents(e, 'enter')}
+                    onDragOver={(e) => handleDragEvents(e, 'enter')}
+                    onDragLeave={(e) => handleDragEvents(e, 'leave')}
+                    onDrop={(e) => handleDragEvents(e, 'drop')}
+                >
+                    <div className="flex flex-col items-center justify-center pt-5 pb-6 text-center">
+                        <svg className="w-10 h-10 mb-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-4-4V7a4 4 0 014-4h.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V16m-4-8V5m0 11v-5m-4 5h12"></path></svg>
+                        <p className="mb-2 text-sm text-slate-500"><span className="font-semibold">Click to upload</span> or drag and drop</p>
+                        <p className="text-xs text-slate-400">PDF, JPG, PNG, TXT, DOCX (MAX {MAX_FILES} files, {MAX_FILE_SIZE_MB}MB each)</p>
+                    </div>
+                    <input id="file-upload-archive" ref={modalFileInputRef} type="file" multiple className="hidden" onChange={handleFileSelection} accept={ACCEPTED_MIME_TYPES.join(',')} />
+                </label>
+                {selectedFiles && Array.from(selectedFiles).length > 0 && (
+                    <div className="text-sm bg-slate-100 p-2 rounded-md border text-slate-600">
+                        <p className="font-semibold">Selected:</p>
+                        <ul className="list-disc list-inside">
+                            {Array.from(selectedFiles).map((file, index) => <li key={index} className="truncate">{(file as File).name}</li>)}
+                        </ul>
                     </div>
                 )}
-                <button onClick={handleCancelUpload} disabled={isCancelling} className="mt-6 px-4 py-2 bg-red-500 text-white font-semibold rounded-lg hover:bg-red-700 disabled:bg-red-300">
-                  {isCancelling ? 'Cancelling...' : 'Cancel Upload'}
-                </button>
+                <div className="flex justify-end pt-4 border-t">
+                    <button
+                        onClick={() => { setUploadModalOpen(false); setSelectedFiles(null); setIndividualFileProgress([]); }}
+                        className="px-4 py-2 bg-slate-200 text-slate-800 rounded-lg hover:bg-slate-300 font-medium transition-colors mr-3"
+                    >
+                        {t('cancel', lang)}
+                    </button>
+                    <button
+                        onClick={handleUploadSubmit}
+                        disabled={!selectedFiles || selectedFiles.length === 0 || !uploadData.subject}
+                        className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-semibold shadow-sm disabled:bg-indigo-300 disabled:cursor-not-allowed"
+                    >
+                        Upload
+                    </button>
+                </div>
+            </div>
+        ) : uploadProgress.error ? (
+             <div className="text-center p-4">
+                <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-100">
+                    <svg className="h-6 w-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </div>
+                <h3 className="font-semibold text-lg text-red-600 mt-3">Upload Failed</h3>
+                <p className="text-red-600 mt-2 bg-red-50 p-3 rounded-lg text-sm">{uploadProgress.error}</p>
+                <div className="mt-6 flex justify-center gap-3">
+                    <button onClick={() => { setUploadModalOpen(false); setUploadProgress(null); setIndividualFileProgress([]); }} className="px-4 py-2 bg-slate-200 text-slate-800 rounded-lg hover:bg-slate-300 font-medium">
+                        Close
+                    </button>
+                    <button onClick={() => setUploadProgress(null)} className="px-4 py-2 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700">
+                        Try Again
+                    </button>
+                </div>
+            </div>
+        ) : (
+             <div className="p-4">
+                <h3 className="font-semibold text-lg text-center mb-4">{isCancelling ? 'Cancelling Upload...' : t('fileUploadProgress', lang)}</h3>
+                <div className="relative pt-1">
+                    <div className="flex mb-2 items-center justify-between text-xs">
+                        <span className="font-semibold text-indigo-600 truncate pr-2">
+                            {uploadProgress.completed + 1 > uploadProgress.total ? "Finalizing..." : `File ${uploadProgress.completed + 1} of ${uploadProgress.total}: ${uploadProgress.currentFile}`}
+                        </span>
+                        <span className="font-semibold text-indigo-600">
+                            {Math.round(((uploadProgress.completed) / uploadProgress.total) * 100)}%
+                        </span>
+                    </div>
+                    <div className="overflow-hidden h-3 text-xs flex rounded bg-indigo-200">
+                        <div style={{ width: `${((uploadProgress.completed) / uploadProgress.total) * 100}%` }} className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-indigo-500 transition-all duration-500"></div>
+                    </div>
+                </div>
+
+                <div className="mt-6 border-t pt-4 border-slate-200 space-y-2">
+                    <h4 className="text-md font-semibold text-slate-700">Individual Files:</h4>
+                    {individualFileProgress.map(file => (
+                        <div key={file.name} className="flex items-center justify-between text-sm">
+                            <span className={`truncate ${file.status === 'completed' ? 'text-green-700' : file.status === 'failed' ? 'text-red-700' : 'text-slate-700'}`}>{file.name}</span>
+                            <span className={`font-medium ${file.status === 'completed' ? 'text-green-600' : file.status === 'failed' ? 'text-red-600' : file.status === 'uploading' ? 'text-indigo-600' : 'text-slate-500'}`}>
+                                {file.status.charAt(0).toUpperCase() + file.status.slice(1)}
+                            </span>
+                        </div>
+                    ))}
+                </div>
+
+                <div className="flex justify-center mt-6">
+                    <button onClick={handleCancelUpload} disabled={isCancelling} className="px-4 py-2 bg-red-500 text-white font-semibold rounded-lg hover:bg-red-700 disabled:bg-red-300 disabled:cursor-wait">
+                      {isCancelling ? 'Cancelling...' : 'Cancel Upload'}
+                    </button>
+                </div>
             </div>
         )}
       </Modal>
@@ -775,11 +853,6 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
       <Modal isOpen={viewingPaper !== null} onClose={() => setViewingPaper(null)} title={viewingPaper?.title || ''}>
         {renderViewingPaperContent()}
       </Modal>
-
-      <input type="file" ref={pdfUploadRef} onChange={(e) => onFileImport(e, 'pdf')} className="hidden" accept="application/pdf" />
-      <input type="file" ref={csvUploadRef} onChange={(e) => onFileImport(e, 'csv')} className="hidden" accept=".csv" />
-      <input type="file" ref={txtUploadRef} onChange={(e) => onFileImport(e, 'txt')} className="hidden" accept="text/plain" />
-      <input type="file" ref={imageUploadRef} onChange={(e) => onFileImport(e, 'image')} className="hidden" accept="image/*" />
     </div>
   );
 };

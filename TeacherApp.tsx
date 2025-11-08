@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef, lazy, Suspense, useMemo } from 'react';
 import { Question, Paper, Tab, Language, Profile, QuestionSource, Difficulty, Semester, UploadProgress, TutorSession } from './types';
 import { t } from './utils/localization';
+// FIX: Import all necessary constants from the constants file.
 import { TABS, LOCAL_STORAGE_KEY, API_KEY_STORAGE_KEY, LANGUAGE_STORAGE_KEY, OPENAI_API_KEY_STORAGE_KEY } from './constants';
 import Modal from './components/Modal';
 import QuestionForm from './components/QuestionForm';
@@ -12,45 +13,26 @@ import LoadingSpinner from './components/LoadingSpinner';
 import SecretMessageModal from './components/SecretMessageModal';
 import LiveClock from './components/LiveClock';
 import LanguageSelector from './components/LanguageSelector';
-import { extractQuestionsFromImageAI, extractQuestionsFromPdfAI, extractQuestionsFromTextAI } from './services/geminiService';
+import { extractQuestionsFromImageAI, extractQuestionsFromPdfAI, extractQuestionsFromTextAI, withTimeout } from './services/geminiService';
 
 const QuestionBank = lazy(() => import('./components/QuestionBank'));
 const PaperGenerator = lazy(() => import('./components/PaperGenerator'));
 const AITutor = lazy(() => import('./components/AITutor'));
 const ExamArchive = lazy(() => import('./components/ExamArchive'));
 const Settings = lazy(() => import('./components/Settings'));
+const FinalExamPapers = lazy(() => import('./components/FinalExamPapers'));
 
 const LAST_TEACHER_TAB_KEY = 'eduquest_last_teacher_tab';
 
+// FIX: Add 'test_papers' to satisfy the Record<Tab, string> type.
 const tabIconAnimations: Record<Tab, string> = {
   bank: 'animate-glow',
   generator: 'animate-sway',
   ai_tutor: 'animate-glow',
   archive: 'animate-bobbing',
   settings: 'animate-slow-spin',
+  test_papers: 'animate-sway',
 };
-
-const dataURLtoBlob = (dataurl: string): Blob | null => {
-    try {
-        const arr = dataurl.split(',');
-        if (arr.length < 2) return null;
-
-        const mimeMatch = arr[0].match(/:(.*?);/);
-        if (!mimeMatch) return null;
-        
-        const mime = mimeMatch[1];
-        const bstr = atob(arr[1]);
-        let n = bstr.length;
-        const u8arr = new Uint8Array(n);
-        while (n--) {
-            u8arr[n] = bstr.charCodeAt(n);
-        }
-        return new Blob([u8arr], { type: mime });
-    } catch (error) {
-        console.error("Error converting data URL to blob:", error);
-        return null;
-    }
-}
 
 const readFileAsDataURL = (fileToRead: File, signal: AbortSignal): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -105,29 +87,19 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
   const longPressTimer = useRef<number | null>(null);
   const navRef = useRef<HTMLDivElement>(null);
   const [sliderStyle, setSliderStyle] = useState({});
-  const [isProcessingFile, setIsProcessingFile] = useState(false);
   const [sessionInfo, setSessionInfo] = useState<{ lastLogin: string; currentSessionStart: string }>({ lastLogin: 'N/A', currentSessionStart: 'N/A' });
+  const [viewingPaper, setViewingPaper] = useState<Paper | null>(null);
+  const [viewingSession, setViewingSession] = useState<TutorSession | null>(null);
+
 
   const allVisibleQuestions = useMemo(() => {
-    // Get all questions that are inside paper objects
-    const allQuestionsFromPapers = papers.flatMap(paper => paper.questions || []);
-    
-    // Combine questions from the main list and from papers
-    const combinedQuestions = [...questions, ...allQuestionsFromPapers];
-
-    // Use a Map to deduplicate questions by their ID
-    const questionMap = new Map<string, Question>();
-    combinedQuestions.forEach(q => {
-        // Ensure question is valid and has an ID before adding to the map
-        if (q && q.id) {
-            questionMap.set(q.id, q);
-        }
-    });
-
-    // Convert map values back to an array and sort them by creation date
-    return Array.from(questionMap.values())
-      .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
-  }, [questions, papers]);
+    // The Question Bank should be the single source of truth. The `questions` state
+    // reflects the `questions` table in the database. Displaying questions from inside
+    // saved paper objects can lead to showing stale data if a question was edited later.
+    return [...questions].sort((a, b) => 
+        new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+    );
+  }, [questions]);
 
   useEffect(() => {
     localStorage.setItem(LAST_TEACHER_TAB_KEY, activeTab);
@@ -135,12 +107,17 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
 
   useEffect(() => {
     const updateSessionInfo = () => {
-        const last = localStorage.getItem('eduquest_last_login');
-        const current = sessionStorage.getItem('eduquest_current_session_start');
-        setSessionInfo({
-            lastLogin: last ? new Date(last).toLocaleString() : 'N/A',
-            currentSessionStart: current ? new Date(current).toLocaleString() : 'N/A'
-        });
+        if (session?.user?.id) {
+            const lastLoginKey = `eduquest_last_login_${session.user.id}`;
+            const currentSessionKey = `eduquest_current_session_start_${session.user.id}`;
+
+            const last = localStorage.getItem(lastLoginKey);
+            const current = sessionStorage.getItem(currentSessionKey);
+            setSessionInfo({
+                lastLogin: last ? new Date(last).toLocaleString() : 'N/A',
+                currentSessionStart: current ? new Date(current).toLocaleString() : 'N/A'
+            });
+        }
     };
 
     updateSessionInfo();
@@ -150,151 +127,96 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
     return () => {
         window.removeEventListener('storage', updateSessionInfo);
     };
-  }, []);
+  }, [session]);
+
+  const stableShowToast = useCallback(showToast, []);
 
   useEffect(() => {
-    if (navRef.current) {
-        const activeTabElement = navRef.current.querySelector(`[data-tab-id="${activeTab}"]`) as HTMLElement;
-        if (activeTabElement) {
-            const { offsetLeft, offsetWidth } = activeTabElement;
-            setSliderStyle({
-                left: `${offsetLeft}px`,
-                width: `${offsetWidth}px`,
-            });
-            activeTabElement.scrollIntoView({
-                behavior: 'smooth',
-                inline: 'center',
-                block: 'nearest'
-            });
-        }
-    }
-  }, [activeTab, lang]);
+    if (!session?.user) return;
 
+    const fetchAllData = async () => {
+        const [questionsRes, papersRes, tutorRes] = await Promise.all([
+            supabase.from('questions').select('*').eq('user_id', session.user.id),
+            supabase.from('papers').select('*').eq('user_id', session.user.id),
+            supabase.from('tutor_sessions').select('*').eq('user_id', session.user.id),
+        ]);
 
-  const handleHeartPressStart = () => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-    }
-    longPressTimer.current = window.setTimeout(() => {
-      setSecretMessageOpen(true);
-    }, 11000); // 11 seconds
-  };
+        if (questionsRes.error) console.error(questionsRes.error.message);
+        else setQuestions(questionsRes.data || []);
 
-  const handleHeartPressEnd = () => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-    }
-  };
+        if (papersRes.error) console.error(papersRes.error.message);
+        else setPapers(papersRes.data || []);
+
+        if (tutorRes.error) console.error(tutorRes.error.message);
+        else setTutorSessions(tutorRes.data || []);
+    };
+
+    fetchAllData();
+
+    // Set up subscriptions for real-time updates
+    const questionsSub = supabase.channel('public:questions')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'questions', filter: `user_id=eq.${session.user.id}` }, payload => {
+            if (payload.eventType === 'INSERT') {
+                setQuestions(q => {
+                    if (q.some(question => question.id === payload.new.id)) return q;
+                    return [payload.new as Question, ...q];
+                });
+            }
+            if (payload.eventType === 'UPDATE') {
+                setQuestions(q => q.map(qu => qu.id === payload.new.id ? payload.new as Question : qu));
+            }
+            if (payload.eventType === 'DELETE') {
+                setQuestions(q => q.filter(qu => qu.id !== (payload.old as Question).id));
+            }
+        })
+        .subscribe();
+        
+    const papersSub = supabase.channel('public:papers')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'papers', filter: `user_id=eq.${session.user.id}` }, payload => {
+            if (payload.eventType === 'INSERT') {
+                setPapers(p => {
+                    if (p.some(paper => paper.id === payload.new.id)) return p;
+                    return [payload.new as Paper, ...p];
+                });
+            }
+            if (payload.eventType === 'UPDATE') {
+                setPapers(p => p.map(pa => pa.id === (payload.new as Paper).id ? payload.new as Paper : pa));
+            }
+            if (payload.eventType === 'DELETE') {
+                setPapers(p => p.filter(pa => pa.id !== (payload.old as Paper).id));
+            }
+        })
+        .subscribe();
+    
+    const tutorSub = supabase.channel('public:tutor_sessions')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'tutor_sessions', filter: `user_id=eq.${session.user.id}` }, payload => {
+            if (payload.eventType === 'INSERT') {
+                setTutorSessions(s => {
+                    if (s.some(session => session.id === payload.new.id)) return s;
+                    return [payload.new as TutorSession, ...s];
+                });
+            }
+            if (payload.eventType === 'DELETE') {
+                setTutorSessions(s => s.filter(se => se.id !== (payload.old as TutorSession).id));
+            }
+        })
+        .subscribe();
+
+    return () => {
+        supabase.removeChannel(questionsSub);
+        supabase.removeChannel(papersSub);
+        supabase.removeChannel(tutorSub);
+    };
+  }, [session]);
 
   useEffect(() => {
     const savedLang = localStorage.getItem(LANGUAGE_STORAGE_KEY) as Language;
     if (savedLang) setLang(savedLang);
-
     const savedApiKey = localStorage.getItem(API_KEY_STORAGE_KEY);
     if (savedApiKey) setUserApiKey(savedApiKey);
-    
     const savedOpenApiKey = localStorage.getItem(OPENAI_API_KEY_STORAGE_KEY);
     if (savedOpenApiKey) setUserOpenApiKey(savedOpenApiKey);
   }, []);
-
-  const fetchData = useCallback(async () => {
-    if (session?.user && profile?.id) {
-      try {
-        const { data: questionsData, error: qError } = await supabase
-          .from('questions')
-          .select('*')
-          .eq('user_id', session.user.id);
-        if (qError) throw new Error(`Failed to fetch questions: ${qError.message}`);
-
-        const { data: papersData, error: pError } = await supabase
-          .from('papers')
-          .select('*')
-          .eq('user_id', session.user.id);
-        if (pError) throw new Error(`Failed to fetch papers: ${pError.message}`);
-
-        const { data: tutorSessionsData, error: tError } = await supabase
-            .from('tutor_sessions')
-            .select('*')
-            .eq('user_id', session.user.id)
-            .order('created_at', { ascending: false });
-        if (tError) throw new Error(`Failed to fetch tutor sessions: ${tError.message}`);
-        setTutorSessions(tutorSessionsData || []);
-
-        const localDataRaw = localStorage.getItem(LOCAL_STORAGE_KEY);
-        if (localDataRaw) {
-          let migrationSucceeded = false;
-          try {
-            const localData = JSON.parse(localDataRaw);
-            const localQuestions: Question[] = (localData.questions || []).filter(Boolean);
-            const localPapers: Paper[] = (localData.papers || []).filter(Boolean);
-
-            const existingQuestionTexts = new Set((questionsData || []).map(q => q.text));
-            const questionsToMigrate = localQuestions.filter(q => q.text && !existingQuestionTexts.has(q.text));
-
-            const oldIdToNewQuestionMap = new Map<string, Question>();
-
-            (questionsData || []).forEach(dbQuestion => {
-              const localMatch = localQuestions.find(lq => lq.text === dbQuestion.text);
-              if (localMatch) {
-                oldIdToNewQuestionMap.set(localMatch.id, dbQuestion);
-              }
-            });
-
-            if (questionsToMigrate.length > 0) {
-              const recordsToInsert = questionsToMigrate.map(({ id, created_at, ...q }) => ({ ...q, user_id: session.user!.id }));
-              const { data: newQuestions, error: insertQError } = await supabase.from('questions').insert(recordsToInsert).select();
-              if (insertQError) throw insertQError;
-
-              questionsToMigrate.forEach((oldQ, index) => {
-                oldIdToNewQuestionMap.set(oldQ.id, newQuestions![index]);
-              });
-            }
-
-            const existingPaperKeys = new Set((papersData || []).map(p => `${p.title}-${p.year}`));
-            const papersToMigrate = localPapers.filter(p => p.title && p.year && !existingPaperKeys.has(`${p.title}-${p.year}`));
-
-            if (papersToMigrate.length > 0) {
-              const recordsToInsert = papersToMigrate.map(p => {
-                const remappedQuestions = (p.questions || []).map(oldQ => oldIdToNewQuestionMap.get(oldQ.id)).filter((q): q is Question => !!q);
-                const { id, created_at, ...pData } = p;
-                return { ...pData, questions: remappedQuestions, user_id: session.user!.id };
-              });
-              const { error: insertPError } = await supabase.from('papers').insert(recordsToInsert);
-              if (insertPError) throw insertPError;
-            }
-
-            if (questionsToMigrate.length > 0 || papersToMigrate.length > 0) {
-              migrationSucceeded = true;
-            }
-          } catch (e: any) {
-            console.error("Failed to parse/migrate local data:", e);
-            showToast(`Data migration failed: ${e.message}`, 'error');
-          } finally {
-            localStorage.removeItem(LOCAL_STORAGE_KEY);
-          }
-
-          if (migrationSucceeded) {
-            showToast('Your locally saved data has been synced to your account!', 'success');
-            fetchData();
-            return;
-          }
-        }
-
-        setQuestions((questionsData || []).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
-        setPapers((papersData || []).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
-
-      } catch (error: any) {
-        console.error("Data fetch failed:", error);
-        showToast(error.message, 'error');
-      }
-    }
-  }, [session, profile?.id, showToast]);
-
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
 
   useEffect(() => {
     localStorage.setItem(LANGUAGE_STORAGE_KEY, lang);
@@ -305,562 +227,343 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
     }
   }, [lang]);
 
-  const handleAddQuestionClick = () => {
-    setEditingQuestion(null);
-    setModalOpen(true);
+  useEffect(() => {
+    if (navRef.current) {
+      const activeTabElement = navRef.current.querySelector(`[data-tab-id="${activeTab}"]`) as HTMLElement;
+      if (activeTabElement) {
+        const { offsetLeft, offsetWidth } = activeTabElement;
+        setSliderStyle({ left: `${offsetLeft}px`, width: `${offsetWidth}px` });
+        activeTabElement.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+      }
+    }
+  }, [activeTab, lang]);
+
+  const handleHeartPressStart = () => {
+    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    longPressTimer.current = window.setTimeout(() => setSecretMessageOpen(true), 11000);
   };
 
-  const handleEditQuestionClick = (question: Question) => {
+  const handleHeartPressEnd = () => {
+    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+  };
+
+  const handleOpenModal = (question: Question | null = null) => {
     setEditingQuestion(question);
     setModalOpen(true);
   };
 
-  const handleDeleteQuestion = async (id: string) => {
-    if (!session?.user) return;
-    const { error } = await supabase.from('questions').delete().eq('id', id).eq('user_id', session.user.id);
+  const handleSaveQuestion = async (question: Question) => {
+    const { data, error } = await supabase.from('questions').upsert(question).select().single();
     if (error) {
-      showToast('Error deleting question.', 'error');
-    } else {
-      setQuestions(prev => prev.filter(q => q.id !== id));
-      showToast(t('questionDeleted', lang), 'error');
+        console.error("Error saving question:", error);
+        showToast(`Error: ${error.message}`, 'error');
+    } else if (data) {
+        if (editingQuestion) {
+            setQuestions(qs => qs.map(q => q.id === data.id ? data : q));
+        } else {
+            setQuestions(qs => [data, ...qs]);
+        }
+        showToast(editingQuestion ? t('questionUpdated', lang) : t('questionAdded', lang));
+        setModalOpen(false);
+        setEditingQuestion(null);
     }
   };
 
-  const handleQuestionSubmit = async (questionData: Question) => {
-    if (!session?.user) return;
+  const handleDeleteQuestion = async (id: string) => {
+    if (window.confirm('Are you sure you want to delete this question?')) {
+        const { error } = await supabase.from('questions').delete().eq('id', id);
+        if (error) showToast(`Error: ${error.message}`, 'error');
+        else showToast(t('questionDeleted', lang), 'error');
+    }
+  };
+  
+const handleSavePaper = async (paper: Paper) => {
+    const { id: localPaperId, ...paperData } = paper;
+    const paperToSave = { ...paperData, user_id: session!.user.id };
     
-    let finalQuestionData = { ...questionData };
-
-    if (finalQuestionData.image_data_url && finalQuestionData.image_data_url.startsWith('data:')) {
-        const blob = dataURLtoBlob(finalQuestionData.image_data_url);
-        if (!blob) {
-            showToast('Invalid image format.', 'error');
-            return;
-        }
-
-        const fileExt = blob.type.split('/')[1] || 'png';
-        const filePath = `${session.user.id}/${new Date().getTime()}.${fileExt}`;
-
-        const { error: uploadError } = await supabase.storage
-            .from('question_images')
-            .upload(filePath, blob);
-
-        if (uploadError) {
-            showToast('Error uploading image.', 'error');
-            console.error('Image Upload Error:', uploadError);
-            return;
-        }
-
-        const { data: urlData } = supabase.storage.from('question_images').getPublicUrl(filePath);
-        if (!urlData?.publicUrl) {
-            showToast('Error getting image public URL.', 'error');
-            return;
-        }
-        finalQuestionData.image_data_url = urlData.publicUrl;
-    }
-
-    if (editingQuestion) {
-      const questionWithUser = { ...finalQuestionData, user_id: session.user.id };
-      const { id, ...questionToUpdate } = questionWithUser;
-      const { data, error } = await supabase.from('questions').update(questionToUpdate).eq('id', finalQuestionData.id).select();
-      if (error || !data) {
-        showToast('Error updating question.', 'error');
-      } else {
-        setQuestions(prev => prev.map(q => q.id === finalQuestionData.id ? data[0] : q));
-        showToast(t('questionUpdated', lang));
-      }
-    } else {
-      const questionWithUser = { ...finalQuestionData, user_id: session.user.id };
-      const { id, ...questionToInsert } = questionWithUser;
-      const { data, error } = await supabase.from('questions').insert(questionToInsert).select();
-      if (error || !data) {
-        showToast('Error adding question.', 'error');
-        console.error("Error adding question:", error);
-      } else {
-        setQuestions(prev => [data[0], ...prev]);
-        showToast(t('questionAdded', lang));
-      }
-    }
-    setModalOpen(false);
-  };
-
-  const postSavePaperProcessing = async (savedPaper: Paper, originalPaper: Paper) => {
-    const bankQuestionIdsToUpdate = originalPaper.questions
-        .filter(q => q.source !== QuestionSource.Generated)
-        .map(q => q.id);
-
-    if (bankQuestionIdsToUpdate.length > 0) {
-        const updatePromises: Promise<any>[] = [];
-        
-        setQuestions(prevQuestions => {
-            return prevQuestions.map(q => {
-                if (bankQuestionIdsToUpdate.includes(q.id)) {
-                    const currentUsedIn = Array.isArray(q.used_in) ? q.used_in : [];
-                    const newUsedIn = [...currentUsedIn, { year: originalPaper.year, semester: originalPaper.semester, paperId: savedPaper.id }];
-                    
-                    updatePromises.push(
-                        supabase.from('questions').update({ used_in: newUsedIn }).eq('id', q.id)
-                    );
-                    return { ...q, used_in: newUsedIn };
-                }
-                return q;
-            });
+    const newQuestionsFromPaper = paper.questions
+        .filter(q => q.source === QuestionSource.Generated || q.source === QuestionSource.Scan)
+        .map(q => {
+            const { id: localQuestionId, ...questionData } = q; 
+            return { ...questionData, user_id: session!.user.id };
         });
 
-        try {
-            await Promise.all(updatePromises);
-        } catch (updateError) {
-            console.error("Some questions failed to update 'used_in':", updateError);
-            showToast("Error updating some question statuses.", 'error');
-        }
-    }
+    const { data: savedPaper, error: paperError } = await supabase
+        .from('papers')
+        .insert(paperToSave)
+        .select()
+        .single();
 
-    setPapers(prev => [savedPaper, ...prev]);
-    showToast(t('paperGenerated', lang));
-  };
-  
-  const handleSavePaper = async (paper: Paper) => {
-    if (!session?.user) return;
-
-    try {
-        const bankQuestions = paper.questions.filter(q => q.source !== QuestionSource.Generated);
-        const newAiQuestions = paper.questions.filter(q => q.source === QuestionSource.Generated);
-        let savedNewQuestions: Question[] = [];
-
-        if (newAiQuestions.length > 0) {
-            try {
-                const processedNewQuestions = await Promise.all(
-                    newAiQuestions.map(async (q) => {
-                        if (q.image_data_url && q.image_data_url.startsWith('data:')) {
-                            const blob = dataURLtoBlob(q.image_data_url);
-                            if (blob) {
-                                const fileExt = blob.type.split('/')[1] || 'png';
-                                const filePath = `${session.user.id}/${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
-                                const { error: uploadError } = await supabase.storage.from('question_images').upload(filePath, blob);
-                                if (uploadError) throw new Error(`Image upload failed: ${uploadError.message}`);
-                                const { data: urlData } = supabase.storage.from('question_images').getPublicUrl(filePath);
-                                if (!urlData?.publicUrl) {
-                                    throw new Error('Could not get public URL for image.');
-                                }
-                                return { ...q, image_data_url: urlData.publicUrl };
-                            }
-                        }
-                        return q;
-                    })
-                );
-
-                const questionsToInsert = processedNewQuestions.map(({ id, ...q }) => ({ ...q, user_id: session.user.id }));
-                const { data, error } = await supabase.from('questions').insert(questionsToInsert).select();
-                if (error) throw error;
-                savedNewQuestions = data || [];
-                setQuestions(prev => [...(data || []), ...prev]);
-            } catch (error: any) {
-                showToast('Error saving new AI questions to bank.', 'error');
-                console.error("Error processing new questions:", error.message || error);
-                return;
-            }
-        }
-
-        const finalPaperQuestions = [...bankQuestions, ...savedNewQuestions];
-
-        const paperToInsert = {
-            user_id: session.user.id,
-            title: paper.title,
-            year: paper.year,
-            class: paper.class,
-            semester: paper.semester,
-            board: paper.board || null,
-            subject: paper.subject || null,
-            source: paper.source,
-            file_types: paper.file_types || null,
-            text: paper.text || null,
-            data_urls: paper.data_urls || null,
-            questions: finalPaperQuestions,
-            created_at: paper.created_at,
-            grounding_sources: paper.grounding_sources || null,
-        };
-
-        const { data: savedPaper, error } = await supabase.from('papers').insert(paperToInsert).select().single();
-        
-        if (error) {
-            const isSchemaError = error.message.includes("grounding_sources") && error.message.includes("column");
-            if (isSchemaError) {
-                console.warn("Attempting to save paper without 'grounding_sources' due to schema mismatch.");
-                showToast('Saving without grounding sources due to outdated database schema. Please see Settings to update.', 'error');
-                const { grounding_sources, ...fallbackPaperToInsert } = paperToInsert;
-                const { data: fallbackSavedPaper, error: fallbackError } = await supabase.from('papers').insert(fallbackPaperToInsert).select().single();
-                
-                if (fallbackError) {
-                    throw fallbackError;
-                }
-                
-                if (!fallbackSavedPaper) {
-                    throw new Error("Error saving paper: could not retrieve the record after creation.");
-                }
-                await postSavePaperProcessing(fallbackSavedPaper as Paper, paper);
-            } else {
-                throw error;
-            }
-            return;
-        }
-      
-        if (!savedPaper) {
-            throw new Error("Error saving paper: could not retrieve the record after creation.");
-        }
-  
-        await postSavePaperProcessing(savedPaper as Paper, paper);
-
-    } catch (e: any) {
-        console.error("An unexpected error occurred in handleSavePaper:", e);
-        showToast(e.message || "An unexpected error occurred while saving the paper.", "error");
-    }
-  };
-  
-  const handleDeletePaper = async (id: string) => {
-    if(!session?.user) return;
-    const paperToDelete = papers.find(p => p.id === id);
-    if (!paperToDelete) return;
-
-    const { error } = await supabase.from('papers').delete().eq('id', id).eq('user_id', session.user.id);
-    if(error){
-        showToast('Error deleting paper.', 'error');
+    if (paperError || !savedPaper) {
+        showToast(`Error saving paper to archive: ${paperError?.message || 'Failed to save paper.'}`, 'error');
         return;
     }
 
-    const questionIdsToUpdate = paperToDelete.questions.map(q => q.id);
-    const updatedQuestions = questions.map(q => {
-        if(questionIdsToUpdate.includes(q.id)){
-            const newUsedIn = q.used_in.filter(use => use.paperId !== id);
-            supabase.from('questions').update({ used_in: newUsedIn }).eq('id', q.id).then();
-            return { ...q, used_in: newUsedIn };
+    setPapers(prevPapers => [savedPaper, ...prevPapers]);
+
+    let questionsError = null;
+    if (newQuestionsFromPaper.length > 0) {
+        const { data: savedQuestions, error } = await supabase
+            .from('questions')
+            .insert(newQuestionsFromPaper)
+            .select();
+
+        questionsError = error;
+
+        if (savedQuestions) {
+            setQuestions(prevQuestions => [...savedQuestions, ...prevQuestions]);
         }
-        return q;
-    });
-
-    setQuestions(updatedQuestions);
-    setPapers(prev => prev.filter(p => p.id !== id));
-    showToast(t('paperDeleted', lang), 'error');
-  };
-
-  const handleUploadPaper = async (paper: Paper, files: FileList, onProgress: (progress: UploadProgress | null) => void, options: { signal: AbortSignal }) => {
-    try {
-        if (!session?.user) throw new Error('User not authenticated.');
-
-        const { id: clientSideId, ...paperData } = paper;
-        const paperFolderId = clientSideId;
-        let allExtractedQuestions: Partial<Question>[] = [];
-        const uploadedFileUrls: string[] = [];
-
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-            if (options.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-            
-            onProgress({ total: files.length, completed: i, pending: files.length - i, currentFile: file.name });
-
-            const MAX_FILE_SIZE_MB = 20;
-            if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-                throw new Error(`File ${file.name} is too large (max ${MAX_FILE_SIZE_MB}MB).`);
-            }
-            
-            const dataUrl = await readFileAsDataURL(file, options.signal);
-            if (options.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-
-            let extracted: Partial<Question>[] = [];
-            if (file.type.startsWith('image/')) {
-                extracted = await extractQuestionsFromImageAI(dataUrl, paper.class, lang, userApiKey, userOpenApiKey, options.signal);
-            } else if (file.type === 'application/pdf') {
-                extracted = await extractQuestionsFromPdfAI(dataUrl, paper.class, lang, userApiKey, userOpenApiKey, options.signal);
-            }
-            allExtractedQuestions.push(...extracted);
-
-            const storageFilePath = `${session.user.id}/${paperFolderId}/${file.name}`;
-            const { error: storageUploadError } = await supabase.storage.from('papers').upload(storageFilePath, file, { upsert: true });
-            if (storageUploadError) throw storageUploadError;
-            
-            const { data: urlData } = supabase.storage.from('papers').getPublicUrl(storageFilePath);
-            if (!urlData?.publicUrl) {
-                throw new Error(`Could not get public URL for ${file.name}`);
-            }
-            uploadedFileUrls.push(urlData.publicUrl);
-        }
-
-        if (options.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-        
-        onProgress({ total: files.length, completed: files.length, pending: 0, currentFile: files[files.length - 1].name });
-
-        let savedQuestions: Question[] = [];
-        if (allExtractedQuestions.length > 0) {
-            const questionsToInsert = allExtractedQuestions.map(q => ({
-                user_id: session.user.id, text: q.text || 'Untitled Question', marks: q.marks || 1, class: paper.class, semester: paper.semester,
-                year: paper.year, chapter: 'Uploaded Paper', difficulty: Difficulty.Moderate, source: QuestionSource.Upload, used_in: [], tags: [],
-            }));
-            const { data, error } = await supabase.from('questions').insert(questionsToInsert).select();
-            if (error) throw new Error(`Failed to save extracted questions: ${error.message}`);
-            savedQuestions = data || [];
-        }
-        
-        const paperToInsert = { 
-            ...paperData, 
-            user_id: session.user.id, 
-            questions: savedQuestions, 
-            data_urls: uploadedFileUrls, 
-            file_types: Array.from(files).map(f => f.type)
-        };
-        const { data: savedPaper, error: dbError } = await supabase.from('papers').insert(paperToInsert).select().single();
-        if (dbError) throw dbError;
-
-        if (savedQuestions.length > 0) {
-            setQuestions(prev => [...savedQuestions, ...prev]);
-        }
-        setPapers(prev => [savedPaper, ...prev]);
-        showToast(t('uploadSuccess', lang));
-        
-    } catch (error: any) {
-        if (error.name !== 'AbortError') {
-            const errorMessage = error.message || 'An unknown error occurred during upload.';
-            console.error("Error handling paper upload:", errorMessage);
-
-            let userFriendlyMessage = 'File upload failed.';
-            if (errorMessage.toLowerCase().includes('timed out')) {
-                userFriendlyMessage = 'The file took too long to process and timed out. Please try a smaller file or try again later.';
-            } else if (errorMessage.toLowerCase().includes('too large')) {
-                userFriendlyMessage = errorMessage;
-            } else {
-                userFriendlyMessage = 'An error occurred while processing the file.';
-            }
-            
-            showToast(userFriendlyMessage, 'error');
-        }
-        throw error; // Re-throw to be caught by the calling component
     }
-  };
 
-const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>, fileType: 'pdf' | 'csv' | 'txt' | 'image') => {
-    const file = e.target.files?.[0];
-    if (e.target) e.target.value = '';
-    if (!file || !session?.user) return;
-
-    setIsProcessingFile(true);
-    showToast(`${t('processingFile', lang)}: ${file.name}`);
-
-    try {
-        let extractedQuestions: Partial<Question>[] = [];
-        if (fileType === 'pdf') {
-            if (file.size > 20 * 1024 * 1024) throw new Error('PDF file is too large (max 20MB).');
-            const dataUrl = await readFileAsDataURL(file, new AbortController().signal);
-            extractedQuestions = await extractQuestionsFromPdfAI(dataUrl, 10, lang, userApiKey, userOpenApiKey);
-        } else if (fileType === 'image') {
-            if (file.size > 10 * 1024 * 1024) throw new Error('Image file is too large (max 10MB).');
-            const dataUrl = await readFileAsDataURL(file, new AbortController().signal);
-            extractedQuestions = await extractQuestionsFromImageAI(dataUrl, 10, lang, userApiKey, userOpenApiKey);
-        } else if (fileType === 'txt') {
-            if (file.size > 2 * 1024 * 1024) throw new Error('Text file is too large (max 2MB).');
-            const text = await file.text();
-            extractedQuestions = await extractQuestionsFromTextAI(text, 10, lang, userApiKey, userOpenApiKey);
-        } else if (fileType === 'csv') {
-            await handleCsvUpload(file);
-            return;
-        } else {
-            throw new Error(t('unsupportedFile', lang));
-        }
-
-        if (extractedQuestions.length === 0) {
-            throw new Error('No questions could be extracted.');
-        }
-
-        const questionsToInsert = extractedQuestions.map(q => ({
-            user_id: session.user!.id,
-            text: q.text || 'Untitled Question',
-            marks: q.marks || 1,
-            class: 10,
-            semester: Semester.First,
-            year: new Date().getFullYear(),
-            chapter: `Uploaded from ${file.name}`,
-            difficulty: Difficulty.Moderate,
-            source: QuestionSource.Upload,
-        }));
-        const { data: newQuestions, error } = await supabase.from('questions').insert(questionsToInsert).select();
-        if (error) throw error;
-        if (newQuestions) {
-            setQuestions(prev => [...newQuestions, ...prev]);
-            showToast(t('fileImportSuccess', lang).replace('{count}', String(newQuestions.length)), 'success');
-        }
-
-    } catch (error: any) {
-        showToast(`${t('fileImportFailed', lang)}: ${error.message}`, 'error');
-    } finally {
-        setIsProcessingFile(false);
+    if (questionsError) {
+        showToast(`Paper saved, but failed to add new questions to bank: ${questionsError.message}`, 'error');
+    } else if (newQuestionsFromPaper.length > 0) {
+        showToast(t('paperGeneratedWithQuestions', lang).replace('{count}', String(newQuestionsFromPaper.length)), 'success');
+    } else {
+        showToast(t('paperSavedToArchive', lang), 'success');
     }
 };
 
-const handleArchiveFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, fileType: 'pdf' | 'csv' | 'txt' | 'image') => {
-    const file = e.target.files?.[0];
-    if (e.target) e.target.value = '';
-    if (!file || !session?.user) return;
-
-    setIsProcessingFile(true);
-    showToast(`${t('processingFile', lang)}: ${file.name}`);
-
-    try {
-        let savedQuestions: Question[] = [];
-
-        if (fileType === 'csv') {
-            const parsedCsvQuestions = await parseCsvToQuestions(file);
-            if(parsedCsvQuestions.length === 0) throw new Error('No valid questions found in CSV.');
-            const { data, error } = await supabase.from('questions').insert(parsedCsvQuestions).select();
-            if (error) throw error;
-            savedQuestions = data || [];
-        } else {
-            let extractedQuestions: Partial<Question>[] = [];
-            if (fileType === 'pdf') {
-                if (file.size > 20 * 1024 * 1024) throw new Error('PDF file is too large (max 20MB).');
-                const dataUrl = await readFileAsDataURL(file, new AbortController().signal);
-                extractedQuestions = await extractQuestionsFromPdfAI(dataUrl, 10, lang, userApiKey, userOpenApiKey);
-            } else if (fileType === 'image') {
-                if (file.size > 10 * 1024 * 1024) throw new Error('Image file is too large (max 10MB).');
-                const dataUrl = await readFileAsDataURL(file, new AbortController().signal);
-                extractedQuestions = await extractQuestionsFromImageAI(dataUrl, 10, lang, userApiKey, userOpenApiKey);
-            } else if (fileType === 'txt') {
-                 if (file.size > 2 * 1024 * 1024) throw new Error('Text file is too large (max 2MB).');
-                const text = await file.text();
-                extractedQuestions = await extractQuestionsFromTextAI(text, 10, lang, userApiKey, userOpenApiKey);
-            } else {
-                throw new Error(t('unsupportedFile', lang));
-            }
-
-            if (extractedQuestions.length === 0) throw new Error('No questions could be extracted from the file.');
-
-            const questionsToInsert = extractedQuestions.map(q => ({
-                user_id: session.user!.id,
-                text: q.text || 'Untitled Question',
-                marks: q.marks || 1, class: 10, semester: Semester.First, year: new Date().getFullYear(),
-                chapter: `From ${file.name}`, difficulty: Difficulty.Moderate, source: QuestionSource.Upload,
-            }));
-            const { data, error } = await supabase.from('questions').insert(questionsToInsert).select();
-            if (error) throw error;
-            savedQuestions = data || [];
-        }
-
-        if (savedQuestions.length > 0) {
-            setQuestions(prev => [...savedQuestions, ...prev]);
-            showToast(t('fileImportSuccess', lang).replace('{count}', String(savedQuestions.length)), 'success');
-
-            const paperId = `paper-${Date.now()}`;
-            let uploadedFileUrl: string | null = null;
-            if (fileType === 'pdf' || fileType === 'image') {
-                const storageFilePath = `${session.user.id}/${paperId}/${file.name}`;
-                const { error } = await supabase.storage.from('papers').upload(storageFilePath, file, { upsert: true });
-                if (error) throw error;
-                const { data: urlData } = supabase.storage.from('papers').getPublicUrl(storageFilePath);
-                if (urlData?.publicUrl) {
-                    uploadedFileUrl = urlData.publicUrl;
-                }
-            }
-
-            const newPaper: Paper = {
-                id: paperId, title: file.name.split('.').slice(0, -1).join('.') || file.name, year: new Date().getFullYear(),
-                class: 10, semester: Semester.First, source: QuestionSource.Upload, created_at: new Date().toISOString(),
-                questions: savedQuestions, data_urls: uploadedFileUrl ? [uploadedFileUrl] : [], file_types: uploadedFileUrl ? [file.type] : [],
-            };
-            const { data: savedPaper, error: paperInsertError } = await supabase.from('papers').insert(newPaper).select().single();
-            if (paperInsertError) throw paperInsertError;
-            setPapers(prev => [savedPaper, ...prev]);
-        } else {
-            showToast('No valid questions found to import.', 'error');
-        }
-    } catch (error: any) {
-        showToast(`${t('fileImportFailed', lang)}: ${error.message}`, 'error');
-    } finally {
-        setIsProcessingFile(false);
+  const handleDeletePaper = async (id: string) => {
+    if (window.confirm('Are you sure you want to delete this paper from the archive? This does not delete questions from the question bank.')) {
+        const { error } = await supabase.from('papers').delete().eq('id', id);
+        if (error) showToast(`Error: ${error.message}`, 'error');
+        else showToast(t('paperDeleted', lang), 'error');
     }
-};
+  };
 
+  const onUploadPaper = async (paper: Paper, files: FileList, onProgress: (progress: UploadProgress | null) => void, options: { signal: AbortSignal }): Promise<Paper> => {
+    if (!session?.user) throw new Error("User not authenticated");
 
-const parseCsvToQuestions = async (file: File) => {
-    if (!session?.user) return [];
-    const text = await file.text();
-    const rows = text.split('\n').map(r => r.trim()).filter(Boolean);
-    const headerRow = rows.shift();
-    if (!headerRow) throw new Error('CSV is empty or has no header.');
+    const paperId = crypto.randomUUID();
+    const folderPath = `${session.user.id}/${paperId}`;
+    const uploadedFilePaths: string[] = [];
     
-    const headers = headerRow.split(',').map(h => h.trim().toLowerCase().replace(/"/g, ''));
-    const requiredHeaders = ['text', 'marks', 'difficulty', 'class', 'chapter'];
-    if (!requiredHeaders.every(h => headers.includes(h))) {
-        throw new Error(`CSV must contain headers: ${requiredHeaders.join(', ')}`);
-    }
+    try {
+        let completedCount = 0;
+        const uploadPromises = Array.from(files).map(file => {
+            return (async () => {
+                const filePath = `${folderPath}/${file.name}`;
+                
+                const { data, error } = await supabase.storage
+                    .from('papers')
+                    .upload(filePath, file, { 
+                        cacheControl: '3600', 
+                        upsert: false, 
+                        contentType: file.type,
+                        signal: options.signal // Pass the signal directly to Supabase client
+                    });
 
-    return rows.map(row => {
-        const values = row.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(v => v.trim().replace(/^"|"$/g, ''));
-        const questionObj: any = {};
-        headers.forEach((header, i) => {
-            questionObj[header] = values[i] || '';
+                if (error) throw error; // Throws cancellation or any other upload error
+
+                uploadedFilePaths.push(filePath);
+                
+                // Safely update progress
+                completedCount++;
+                onProgress({ 
+                    total: files.length, 
+                    completed: completedCount, 
+                    pending: files.length - completedCount, 
+                    currentFile: file.name 
+                });
+
+                return {
+                    url: supabase.storage.from('papers').getPublicUrl(filePath).data.publicUrl,
+                    type: file.type
+                };
+            })();
         });
 
-        return {
-            user_id: session.user!.id,
-            text: questionObj.text,
-            answer: questionObj.answer || undefined,
-            marks: parseInt(questionObj.marks, 10) || 1,
-            difficulty: (Object.values(Difficulty).includes(questionObj.difficulty as Difficulty) ? questionObj.difficulty : Difficulty.Moderate) as Difficulty,
-            class: parseInt(questionObj.class, 10) || 10,
-            chapter: questionObj.chapter || 'Imported from CSV',
-            tags: questionObj.tags ? questionObj.tags.split(';').map((t: string) => t.trim()).filter(Boolean) : [],
-            source: QuestionSource.Upload,
-            year: new Date().getFullYear(),
-            semester: Semester.First,
+        const uploadResults = await Promise.all(uploadPromises);
+        onProgress({ total: files.length, completed: files.length, pending: 0, currentFile: 'Finalizing...' });
+
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { id, ...paperMeta } = paper;
+        const finalPaperData = {
+            ...paperMeta,
+            id: paperId,
+            user_id: session.user.id,
+            data_urls: uploadResults.map(f => f.url),
+            file_types: uploadResults.map(f => f.type),
+            questions: []
         };
-    }).filter(q => q.text);
-};
 
+        const { data: savedPaper, error: insertError } = await supabase
+            .from('papers')
+            .insert(finalPaperData)
+            .select()
+            .single()
+            .abortSignal(options.signal);
+        
+        if (insertError) throw insertError;
+        if (!savedPaper) throw new Error("Failed to save paper metadata to database.");
 
-const handleCsvUpload = async (file: File) => {
-    setIsProcessingFile(true);
-    try {
-        const questionsToInsert = await parseCsvToQuestions(file);
-        if (questionsToInsert.length === 0) {
-            showToast('No valid questions found in CSV.', 'error');
-            return;
+        showToast(t('uploadSuccess', lang));
+        return savedPaper as Paper;
+
+    } catch (error) {
+        // This catch block is for rollback. The raw error will be re-thrown to the caller.
+        console.error("Upload process failed, initiating rollback...", { paperId, error });
+
+        if (uploadedFilePaths.length > 0) {
+            supabase.storage.from('papers').remove(uploadedFilePaths).then(({ error: removeError }) => {
+                if (removeError) console.error("Rollback failed (file deletion):", removeError);
+            });
         }
-        const { data: newQuestions, error } = await supabase.from('questions').insert(questionsToInsert).select();
-        if (error) throw error;
-        if (newQuestions) {
-            setQuestions(prev => [...newQuestions, ...prev]);
-            showToast(t('csvImportSuccess', lang).replace('{count}', String(newQuestions.length)), 'success');
-        }
-    } catch (error: any) {
-        showToast(t('csvImportFailed', lang), 'error');
-    } finally {
-        setIsProcessingFile(false);
+        
+        throw error;
     }
-};
-
-  const handleExport = () => {
-    const data = JSON.stringify({ questions, papers }, null, 2);
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'eduquest_backup.json';
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast(t('dataExported', lang));
   };
   
-  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    showToast("Import is not supported in cloud mode yet.", 'error');
+  const onProcessPaper = async (paper: Paper, files: FileList) => {
+    if (!files || files.length === 0 || !session?.user) return;
+
+    const firstFile = files[0];
+    const isExtractable = firstFile.type.startsWith('image/') || firstFile.type === 'application/pdf' || firstFile.type === 'text/plain';
+
+    if (!isExtractable) {
+        console.log(`File type ${firstFile.type} is not extractable. Skipping AI processing.`);
+        return;
+    }
+
+    const processAbortController = new AbortController();
+    showToast(`AI processing started for "${paper.title}"...`, 'success');
+    
+    try {
+        const dataUrl = await readFileAsDataURL(firstFile, processAbortController.signal);
+        let results: Partial<Question>[] = [];
+        
+        if (firstFile.type.startsWith('image/')) {
+            results = await extractQuestionsFromImageAI(dataUrl, paper.class, lang, userApiKey, userOpenApiKey, processAbortController.signal);
+        } else if (firstFile.type === 'application/pdf') {
+            results = await extractQuestionsFromPdfAI(dataUrl, paper.class, lang, userApiKey, userOpenApiKey, processAbortController.signal);
+        } else if (firstFile.type === 'text/plain') {
+            const base64Data = dataUrl.split(',')[1];
+            // Robust decoding for UTF-8 and other characters
+            const binaryString = atob(base64Data);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            const textContent = new TextDecoder().decode(bytes);
+            results = await extractQuestionsFromTextAI(textContent, paper.class, lang, userApiKey, userOpenApiKey, processAbortController.signal);
+        }
+        
+        if (results.length > 0) {
+            const extractedQuestions: Question[] = results.map((q, i): Question => ({
+                id: `scan-${paper.id}-${i}`,
+                class: paper.class,
+                chapter: 'Scanned',
+                text: q.text!,
+                answer: q.answer,
+                marks: q.marks || 1,
+                difficulty: Difficulty.Moderate,
+                used_in: [],
+                source: QuestionSource.Scan,
+                year: paper.year,
+                semester: paper.semester,
+                tags: [],
+                created_at: new Date().toISOString(),
+            }));
+
+            const newQuestionsToBank = extractedQuestions.map(q => ({ ...q, user_id: session.user!.id }));
+            const { error: insertError } = await supabase.from('questions').insert(newQuestionsToBank);
+            if (insertError) throw insertError;
+            
+            const { error: updateError } = await supabase.from('papers').update({ questions: extractedQuestions }).eq('id', paper.id);
+            if (updateError) throw updateError;
+
+            showToast(t('paperGeneratedWithQuestions', lang).replace('{count}', String(extractedQuestions.length)));
+        } else {
+             showToast(`AI found no questions to extract from "${paper.title}".`, 'success');
+        }
+
+    } catch (err: any) {
+        console.error("AI processing failed:", err);
+        showToast(`AI failed to process "${paper.title}": ${err.message}`, 'error');
+    }
   };
 
-  const handleClear = async () => {
-    if(!session?.user) return;
-    if(window.confirm(t('clearWarning', lang))) {
-      await supabase.from('questions').delete().eq('user_id', session.user.id);
-      await supabase.from('papers').delete().eq('user_id', session.user.id);
-      await supabase.from('tutor_sessions').delete().eq('user_id', session.user.id);
-      setQuestions([]);
-      setPapers([]);
-      setTutorSessions([]);
-      showToast(t('dataCleared', lang), 'error');
+  const handleProfileUpdate = async (updatedProfile: Profile, avatarFile?: File) => {
+    if (!session?.user) throw new Error("User not authenticated.");
+    try {
+        let newAvatarUrl = updatedProfile.avatar_url;
+        if (avatarFile) {
+            const fileExt = avatarFile.name.split('.').pop();
+            const filePath = `${session.user.id}/avatar.${fileExt}`;
+            const { error: uploadError } = await supabase.storage.from('avatars').upload(filePath, avatarFile, { upsert: true });
+            if (uploadError) throw uploadError;
+            const { data: urlData } = await supabase.storage.from('avatars').getPublicUrl(filePath);
+            newAvatarUrl = `${urlData.publicUrl}?t=${new Date().getTime()}`;
+        }
+        const { id, ...profileUpdates } = updatedProfile;
+        const finalProfile = { ...profileUpdates, avatar_url: newAvatarUrl, updated_at: new Date().toISOString() };
+        
+        const { data, error } = await supabase.from('profiles').update(finalProfile).eq('id', session.user.id).select().single();
+        if(error || !data) {
+            throw error ?? new Error('No data returned from profile update');
+        }
+
+        setProfile(data);
+        showToast('Profile updated!', 'success');
+    } catch (err: unknown) {
+        let message = 'An unknown error occurred while updating profile.';
+        if (err instanceof Error) {
+            message = err.message;
+        } else if (err && typeof err === 'object' && 'message' in err) {
+            message = String((err as { message: unknown }).message);
+        } else if (typeof err === 'string') {
+            message = err;
+        }
+        console.error("Error updating profile:", err);
+        showToast(message, 'error');
+        throw err;
     }
+  };
+
+  const handleExportData = () => {
+    const dataToExport = { questions, papers };
+    const dataStr = JSON.stringify(dataToExport, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = 'eduquest_backup.json';
+    link.href = url;
+    link.click();
+    showToast(t('dataExported', lang));
+  };
+
+  const handleImportData = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const { questions: importedQuestions, papers: importedPapers } = JSON.parse(event.target?.result as string);
+          if (Array.isArray(importedQuestions)) {
+            await supabase.from('questions').delete().eq('user_id', session!.user.id);
+            await supabase.from('questions').insert(importedQuestions.map((q: any) => ({...q, user_id: session!.user.id})));
+          }
+          if (Array.isArray(importedPapers)) {
+            await supabase.from('papers').delete().eq('user_id', session!.user.id);
+            await supabase.from('papers').insert(importedPapers.map((p: any) => ({...p, user_id: session!.user.id})));
+          }
+          showToast(t('dataImported', lang));
+        } catch (error) {
+          console.error(error);
+          showToast('Failed to import data. Invalid file format.', 'error');
+        }
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  const handleClearData = async () => {
+    await supabase.from('questions').delete().eq('user_id', session!.user.id);
+    await supabase.from('papers').delete().eq('user_id', session!.user.id);
+    await supabase.from('tutor_sessions').delete().eq('user_id', session!.user.id);
+    showToast(t('dataCleared', lang), 'error');
   };
   
   const handleSaveApiKey = (key: string) => {
@@ -886,54 +589,10 @@ const handleCsvUpload = async (file: File) => {
     setUserOpenApiKey('');
     showToast('OpenAI API Key removed.', 'error');
   };
-
-  const handleProfileUpdate = async (updatedProfile: Profile, avatarFile?: File) => {
+  
+  const handleSaveTutorResponse = async (queryText: string, queryImageUrl: string | null, responseText: string, responseImageUrl: string | undefined, tutorClass: number) => {
     if (!session?.user) {
-        throw new Error("User not authenticated for profile update.");
-    }
-
-    try {
-        let newAvatarUrl = updatedProfile.avatar_url;
-        if (avatarFile) {
-            const fileExt = avatarFile.name.split('.').pop();
-            const filePath = `${session.user.id}/avatar.${fileExt}`;
-            const { error: uploadError } = await supabase.storage
-                .from('avatars')
-                .upload(filePath, avatarFile, { upsert: true });
-
-            if (uploadError) throw uploadError;
-
-            const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(filePath);
-            if (urlData?.publicUrl) {
-                newAvatarUrl = `${urlData.publicUrl}?t=${new Date().getTime()}`;
-            }
-        }
-        
-        const { id, ...profileUpdates } = updatedProfile;
-        const finalProfile = { 
-            ...profileUpdates, 
-            avatar_url: newAvatarUrl,
-            updated_at: new Date().toISOString()
-        };
-        const { data, error } = await supabase.from('profiles').update(finalProfile).eq('id', session.user.id).select().single();
-        
-        if(error || !data) {
-            throw error || new Error('No data returned from profile update');
-        }
-        
-        setProfile(data);
-        showToast('Profile updated!', 'success');
-
-    } catch (error: any) {
-        console.error("Error updating profile:", error.message || error);
-        showToast('Error updating profile.', 'error');
-        throw error;
-    }
-};
-
-  const handleSaveTutorResponse = async (queryText: string, queryImageUrl: string | null, responseText: string, tutorClass: number) => {
-    if (!session?.user) {
-        showToast("You must be logged in to save sessions.", 'error');
+        showToast("You must be logged in to save sessions.", "error");
         return;
     }
     const { data, error } = await supabase
@@ -943,165 +602,107 @@ const handleCsvUpload = async (file: File) => {
             query_text: queryText,
             query_image_url: queryImageUrl,
             response_text: responseText,
+            response_image_url: responseImageUrl,
             tutor_class: tutorClass
         })
         .select()
         .single();
     
     if (error || !data) {
-        console.error("Error saving tutor session:", error);
-        showToast("Failed to save tutor session.", 'error');
+        console.error("Error saving tutor session:", error?.message || "No data returned");
+        showToast("Failed to save session.", 'error');
     } else {
-        setTutorSessions(prev => [data, ...prev]);
+        setTutorSessions(prev => [data as TutorSession, ...prev]);
         showToast("Session saved!", 'success');
     }
   };
 
-  const handleDeleteTutorSession = async (sessionId: string) => {
-    if (!session?.user) {
-        showToast("You must be logged in to delete sessions.", 'error');
-        return;
-    }
-    const { error } = await supabase
-        .from('tutor_sessions')
-        .delete()
-        .eq('id', sessionId)
-        .eq('user_id', session.user.id);
-
-    if (error) {
-        console.error("Error deleting tutor session:", error);
-        showToast("Failed to delete session.", 'error');
-    } else {
-        setTutorSessions(prev => prev.filter(s => s.id !== sessionId));
-        showToast("Session deleted.", 'success');
-    }
+  const handleDeleteSession = async (sessionId: string) => {
+    if (!session?.user) return;
+    const { error } = await supabase.from('tutor_sessions').delete().eq('id', sessionId).eq('user_id', session.user.id);
+    if(error) showToast("Failed to delete session.", "error");
+    else showToast("Session deleted.", "success");
   };
 
   const renderContent = () => {
-    return (
-      <>
-        <div style={{ display: activeTab === 'bank' ? 'block' : 'none' }}>
-          <QuestionBank 
-            questions={allVisibleQuestions} 
-            onAddQuestion={handleAddQuestionClick} 
-            onEditQuestion={handleEditQuestionClick} 
-            onDeleteQuestion={handleDeleteQuestion} 
-            lang={lang} 
-            showToast={showToast}
-            onFileImport={handleFileImport}
-            isProcessingFile={isProcessingFile}
-          />
-        </div>
-        <div style={{ display: activeTab === 'generator' ? 'block' : 'none' }}>
-          <PaperGenerator questions={allVisibleQuestions} onSavePaper={handleSavePaper} lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} />
-        </div>
-        <div style={{ display: activeTab === 'ai_tutor' ? 'block' : 'none' }}>
-           <AITutor lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} sessions={tutorSessions} onSaveResponse={handleSaveTutorResponse} onDeleteSession={handleDeleteTutorSession} />
-        </div>
-        <div style={{ display: activeTab === 'archive' ? 'block' : 'none' }}>
-          <ExamArchive 
-            papers={papers} 
-            onDeletePaper={handleDeletePaper} 
-            onUploadPaper={handleUploadPaper} 
-            lang={lang}
-            onFileImport={handleArchiveFileUpload}
-            isProcessingFile={isProcessingFile}
-            showToast={showToast}
-          />
-        </div>
-        <div style={{ display: activeTab === 'settings' ? 'block' : 'none' }}>
-           <Settings showToast={showToast} onExport={handleExport} onImport={handleImport} onClear={handleClear} lang={lang} userApiKey={userApiKey} onSaveApiKey={handleSaveApiKey} onRemoveApiKey={handleRemoveApiKey} userOpenApiKey={userOpenApiKey} onSaveOpenApiKey={handleSaveOpenApiKey} onRemoveOpenApiKey={handleRemoveOpenApiKey} profile={profile!} onProfileUpdate={handleProfileUpdate} />
-        </div>
-      </>
-    );
+    switch (activeTab) {
+      case 'bank': return <QuestionBank questions={allVisibleQuestions} onAddQuestion={() => handleOpenModal()} onEditQuestion={handleOpenModal} onDeleteQuestion={handleDeleteQuestion} lang={lang} showToast={showToast} />;
+      case 'generator': return <PaperGenerator questions={questions} onSavePaper={handleSavePaper} lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} />;
+      case 'ai_tutor': return <AITutor lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} sessions={tutorSessions} onSaveResponse={handleSaveTutorResponse} onDeleteSession={handleDeleteSession} viewingSession={viewingSession} setViewingSession={setViewingSession} />;
+      case 'archive': return <ExamArchive papers={papers} onDeletePaper={handleDeletePaper} onUploadPaper={onUploadPaper} onProcessPaper={onProcessPaper} lang={lang} showToast={showToast} viewingPaper={viewingPaper} setViewingPaper={setViewingPaper} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} />;
+      case 'test_papers': return <FinalExamPapers lang={lang} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} showToast={showToast} onSavePaper={handleSavePaper} />;
+      case 'settings': return <Settings onExport={handleExportData} onImport={handleImportData} onClear={handleClearData} lang={lang} userApiKey={userApiKey} onSaveApiKey={handleSaveApiKey} onRemoveApiKey={handleRemoveApiKey} userOpenApiKey={userOpenApiKey} onSaveOpenApiKey={handleSaveOpenApiKey} onRemoveOpenApiKey={handleRemoveOpenApiKey} profile={profile!} onProfileUpdate={handleProfileUpdate} showToast={showToast} />;
+      default: return null;
+    }
   };
 
   return (
     <>
-      <header className="bg-green-50/80 backdrop-blur-lg shadow-md sticky top-0 z-40 border-b border-green-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center py-4">
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900 equipment-title-container">
-                <div className="w-9 h-9 bg-indigo-600 rounded-lg flex items-center justify-center mr-3 shadow-md">
-                    <span className="text-xl microscope-emoji">{t('appHeaderEmoji', lang)}</span>
-                </div>
-                <span className="font-serif-display animate-text-color-cycle">{t('appHeaderText', lang)}</span>
-              </h1>
-              <p className="text-sm text-slate-500">{t('appSubtitle', lang)}</p>
+      <header className="bg-green-100/60 backdrop-blur-lg shadow-sm sticky top-0 z-40">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex justify-between items-center py-4">
+              <div>
+                <h1 className="text-2xl font-bold text-slate-900 equipment-title-container">
+                    <div className="w-9 h-9 bg-indigo-600 rounded-lg flex items-center justify-center mr-3 shadow-md">
+                        <span className="text-xl microscope-emoji">{t('appHeaderEmoji', lang)}</span>
+                    </div>
+                    <span className="font-serif-display animate-text-color-cycle">{t('appHeaderText', lang)}</span>
+                </h1>
+                <p className="text-sm text-slate-500">{t('appSubtitle', lang)}</p>
+              </div>
+              <div className="flex items-center space-x-3">
+                <LiveClock />
+                <LanguageSelector lang={lang} onLangChange={setLang} />
+              </div>
             </div>
-            <div className="flex items-center space-x-3">
-              <LiveClock />
-              <LanguageSelector lang={lang} onLangChange={setLang} />
+            <div className="my-2 p-[1.5px] rounded-full animate-background-color-cycle">
+                <nav ref={navRef} className="relative flex items-center bg-green-50 backdrop-blur-md p-1 rounded-full overflow-x-auto no-scrollbar">
+                    <div className="absolute bg-white rounded-full h-10 shadow-md premium-tab-slider" style={sliderStyle} aria-hidden="true" />
+                    {TABS.map(tab => (
+                        <button key={tab.id} data-tab-id={tab.id} onClick={() => setActiveTab(tab.id)}
+                            className={`relative z-10 flex-shrink-0 px-3 sm:px-4 py-2 text-sm font-semibold rounded-full transition-colors duration-300 flex items-center justify-center whitespace-nowrap ${activeTab === tab.id ? 'text-indigo-700' : 'text-slate-600 hover:text-slate-800'}`}
+                            aria-selected={activeTab === tab.id}>
+                            <span className={`mr-2 text-lg ${activeTab === tab.id ? tabIconAnimations[tab.id] : ''}`}>{tab.icon}</span>
+                            {t(tab.id, lang)}
+                        </button>
+                    ))}
+                </nav>
             </div>
-          </div>
-          <nav className="relative pb-2 pt-1">
-            <div ref={navRef} className="relative flex items-center bg-slate-200/80 p-1 rounded-full overflow-x-auto no-scrollbar">
-              <div
-                className="absolute bg-green-50/80 backdrop-blur-lg rounded-full h-10 shadow-md transition-all duration-300 ease-in-out border border-green-200"
-                style={sliderStyle}
-                aria-hidden="true"
-              />
-              {TABS.map(tab => (
-                <button
-                  key={tab.id}
-                  data-tab-id={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`relative z-10 flex-shrink-0 px-3 sm:px-4 py-2 text-sm font-semibold rounded-full transition-colors duration-300 flex items-center justify-center whitespace-nowrap ${
-                    activeTab === tab.id
-                      ? 'text-indigo-700'
-                      : 'text-slate-600 hover:text-slate-800'
-                  }`}
-                  aria-selected={activeTab === tab.id}
-                >
-                  <span className={`mr-2 text-lg ${activeTab === tab.id ? tabIconAnimations[tab.id] : ''}`}>{tab.icon}</span>
-                  {t(tab.id, lang)}
-                </button>
-              ))}
-            </div>
-          </nav>
         </div>
       </header>
-
-      <main className="flex-grow max-w-7xl mx-auto w-full">
+      
+      <main className="flex-grow">
         <Suspense fallback={<LoadingSpinner message={t('loading', lang)} />}>
-            {renderContent()}
+          {renderContent()}
         </Suspense>
       </main>
-      
-      <footer className="text-center py-4 text-sm text-slate-500 border-t border-green-200 bg-green-50/80 backdrop-blur-lg">
-        <div className="text-xs text-slate-400 mb-2 space-x-4">
-            <span><strong>Current Session:</strong> {sessionInfo.currentSessionStart}</span>
-            <span><strong>Last Login:</strong> {sessionInfo.lastLogin}</span>
-        </div>
-        <p>© {new Date().getFullYear()} {t('appTitle', lang)}. All Rights Reserved.</p>
-        <p className="mt-1 text-xs text-slate-400">
-          Crafted with{' '}
-          <span 
-            className="animate-beat animate-text-color-cycle cursor-pointer"
-            onMouseDown={handleHeartPressStart}
-            onMouseUp={handleHeartPressEnd}
-            onMouseLeave={handleHeartPressEnd}
-            onTouchStart={handleHeartPressStart}
-            onTouchEnd={handleHeartPressEnd}
-          >
-            ❤️
-          </span>
-          {' '}for Hiyan by <span className="animate-beat animate-text-color-cycle">Vedant</span> v1.0
-        </p>
-      </footer>
 
-      <Modal
-        isOpen={isModalOpen}
-        onClose={() => setModalOpen(false)}
-        title={editingQuestion ? t('editQuestion', lang) : t('addQuestion', lang)}
-      >
-        <QuestionForm
-          onSubmit={handleQuestionSubmit}
-          onCancel={() => setModalOpen(false)}
-          initialData={editingQuestion}
-          lang={lang}
-        />
+      <footer className="text-center py-4 text-sm text-slate-500 border-t border-green-200/40 bg-green-100/60 backdrop-blur-lg">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="text-xs text-slate-400 mb-2 space-x-4">
+                <span><strong>Current Session:</strong> {sessionInfo.currentSessionStart}</span>
+                <span><strong>Last Login:</strong> {sessionInfo.lastLogin}</span>
+            </div>
+            <p>© {new Date().getFullYear()} {t('appTitle', lang)}. All Rights Reserved.</p>
+            <p className="mt-1 text-xs text-slate-400">
+            Crafted with{' '}
+            <span
+                className="animate-beat animate-text-color-cycle cursor-pointer"
+                onMouseDown={handleHeartPressStart}
+                onMouseUp={handleHeartPressEnd}
+                onMouseLeave={handleHeartPressEnd}
+                onTouchStart={handleHeartPressStart}
+                onTouchEnd={handleHeartPressEnd}
+            >
+                ❤️
+            </span>
+            {' '}for Hiyan by <span className="animate-beat animate-text-color-cycle">Vedant</span> v1.0
+            </p>
+        </div>
+      </footer>
+      
+      <Modal isOpen={isModalOpen} onClose={() => setModalOpen(false)} title={editingQuestion ? t('editQuestion', lang) : t('addQuestion', lang)}>
+        <QuestionForm onSubmit={handleSaveQuestion} onCancel={() => setModalOpen(false)} initialData={editingQuestion} lang={lang} />
       </Modal>
 
       <SecretMessageModal isOpen={isSecretMessageOpen} onClose={() => setSecretMessageOpen(false)} />

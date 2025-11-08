@@ -1,10 +1,16 @@
+
+
 import React, { useState, useEffect, useCallback, lazy, Suspense, useMemo } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../services/supabaseClient';
-import { Paper, TestAttempt, StudentTab, Language, Profile, Question, QuestionSource, Semester, Difficulty, TutorSession } from '../types';
+// FIX: Import ViewState from the shared types file.
+import { Paper, TestAttempt, StudentTab, Language, Profile, Question, QuestionSource, Semester, Difficulty, TutorSession, ViewState, StudyMaterial, Flashcard } from '../types';
 import { STUDENT_ATTEMPTS_KEY, API_KEY_STORAGE_KEY, LANGUAGE_STORAGE_KEY, OPENAI_API_KEY_STORAGE_KEY } from '../constants';
 import { t } from '../utils/localization';
 import LoadingSpinner from './LoadingSpinner';
+import Modal from './Modal';
+import { loadScript } from '../utils/scriptLoader';
+import { getBengaliFontBase64, getDevanagariFontBase64, getKannadaFontBase64 } from '../utils/fontData';
 
 const Header = lazy(() => import('./student/Header'));
 const Nav = lazy(() => import('./student/Nav'));
@@ -15,18 +21,58 @@ const TestResults = lazy(() => import('./student/TestResults'));
 const Settings = lazy(() => import('./student/Settings'));
 const PracticeZone = lazy(() => import('./student/PracticeZone'));
 const AITutor = lazy(() => import('./student/AITutor'));
+const FinalExamPapers = lazy(() => import('./FinalExamPapers'));
 
 interface StudentAppProps {
   showToast: (message: string, type?: 'success' | 'error') => void;
 }
 
-type ViewState = 
-    | { view: 'dashboard' }
-    | { view: 'results'; attemptId?: string }
-    | { view: 'practice' }
-    | { view: 'ai_tutor' }
-    | { view: 'settings' }
-    | { view: 'test'; paper: Paper };
+// --- Start of Embedded Helper Components for Modal ---
+const MarkdownRenderer: React.FC<{ content: string }> = ({ content }) => {
+    const containerRef = React.useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (containerRef.current && window.marked) {
+            containerRef.current.innerHTML = window.marked.parse(content || '');
+        } else if (!window.marked) {
+            loadScript("https://cdn.jsdelivr.net/npm/marked/marked.min.js").then(() => {
+                 if (containerRef.current) {
+                    containerRef.current.innerHTML = window.marked.parse(content || '');
+                 }
+            });
+        }
+    }, [content]);
+    return <div ref={containerRef} className="prose prose-sm max-w-none prose-slate"></div>;
+};
+
+const FlashcardViewer: React.FC<{ flashcards: Flashcard[], title: string, lang: Language }> = ({ flashcards, title, lang }) => {
+    const [currentIndex, setCurrentIndex] = useState(0);
+    const [isFlipped, setIsFlipped] = useState(false);
+    const currentCard = flashcards[currentIndex];
+    const handleNext = () => {
+        setIsFlipped(false);
+        setTimeout(() => setCurrentIndex((p) => (p + 1) % flashcards.length), 250);
+    };
+    const handlePrev = () => {
+        setIsFlipped(false);
+        setTimeout(() => setCurrentIndex((p) => (p - 1 + flashcards.length) % flashcards.length), 250);
+    };
+    return (
+        <div className="flex flex-col items-center">
+            <h3 className="text-lg font-bold text-slate-800 mb-4">{title} ({currentIndex + 1}/{flashcards.length})</h3>
+            <div className="w-full h-64 [perspective:1000px]" onClick={() => setIsFlipped(!isFlipped)}>
+                <div className={`relative w-full h-full [transform-style:preserve-3d] transition-transform duration-500 cursor-pointer ${isFlipped ? '[transform:rotateY(180deg)]' : ''}`}>
+                    <div className="absolute w-full h-full [backface-visibility:hidden] bg-white border-2 border-indigo-300 rounded-lg flex items-center justify-center p-6 text-center shadow-lg"><p className="text-xl font-semibold text-slate-700">{currentCard.question}</p></div>
+                    <div className="absolute w-full h-full [backface-visibility:hidden] bg-indigo-100 border-2 border-indigo-300 rounded-lg flex items-center justify-center p-6 text-center shadow-lg [transform:rotateY(180deg)]"><p className="text-lg text-indigo-800">{currentCard.answer}</p></div>
+                </div>
+            </div>
+            <div className="flex justify-between w-full mt-6">
+                <button onClick={handlePrev} className="px-5 py-2.5 font-semibold text-slate-700 bg-slate-200 hover:bg-slate-300 rounded-lg">&larr; {t('previous', lang)}</button>
+                <button onClick={handleNext} className="px-5 py-2.5 font-semibold text-slate-700 bg-slate-200 hover:bg-slate-300 rounded-lg">{t('next', lang)} &rarr;</button>
+            </div>
+        </div>
+    );
+};
+// --- End of Embedded Helper Components ---
 
 const LAST_STUDENT_TAB_KEY = 'eduquest_last_student_tab';
 
@@ -56,6 +102,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   const [lang, setLang] = useState<Language>('en');
   const [userApiKey, setUserApiKey] = useState<string>('');
   const [userOpenApiKey, setUserOpenApiKey] = useState<string>('');
+  const [viewingMaterial, setViewingMaterial] = useState<StudyMaterial | null>(null);
 
   useEffect(() => {
     const savedLang = localStorage.getItem(LANGUAGE_STORAGE_KEY) as Language;
@@ -79,7 +126,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
 
   useEffect(() => {
     // Persist the current main tab, but not transient states like 'test' or detailed views.
-    if (['dashboard', 'results', 'practice', 'ai_tutor', 'settings'].includes(viewState.view)) {
+    if (['dashboard', 'results', 'practice', 'ai_tutor', 'settings', 'test_papers'].includes(viewState.view)) {
       if (viewState.view === 'results' && 'attemptId' in viewState && viewState.attemptId) {
         // Don't save if we are on a detailed result page.
       } else {
@@ -102,7 +149,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
     
     if (error) {
         console.error('Error fetching papers:', error.message || error);
-        showToast('Failed to load tests.', 'error');
+        showToast(`Failed to load tests: ${error.message}`, 'error');
     } else {
         setPapers(data || []);
     }
@@ -118,7 +165,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
 
     if (error) {
         console.error('Error fetching attempts:', error.message || error);
-        showToast('Failed to load past results.', 'error');
+        showToast(`Failed to load past results: ${error.message}`, 'error');
         return [];
     }
     return data.map(row => ({ ...row.attempt_data, db_id: row.id })) || [];
@@ -134,7 +181,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
     
     if (error) {
         console.error("Failed to fetch tutor sessions", error);
-        showToast("Could not load AI Tutor history.", 'error');
+        showToast(`Could not load AI Tutor history: ${error.message}`, 'error');
     } else {
         setTutorSessions(data || []);
     }
@@ -144,60 +191,66 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   useEffect(() => {
     const loadData = async () => {
         setLoading(true);
-        await Promise.all([fetchPapers(), fetchTutorSessions()]);
-        const dbAttempts = await fetchAttempts();
+        try {
+            await Promise.all([fetchPapers(), fetchTutorSessions()]);
+            const dbAttempts = await fetchAttempts();
 
-        // One-time migration from localStorage
-        const localAttemptsRaw = localStorage.getItem(STUDENT_ATTEMPTS_KEY);
-        if (localAttemptsRaw) {
-            try {
-                const localAttempts: TestAttempt[] = JSON.parse(localAttemptsRaw);
-                const newAttemptsToMigrate = localAttempts.filter(local => 
-                    !dbAttempts.some(db => db.paperId === local.paperId && db.completedAt === local.completedAt)
-                );
+            // One-time migration from localStorage
+            const localAttemptsRaw = localStorage.getItem(STUDENT_ATTEMPTS_KEY);
+            if (localAttemptsRaw) {
+                try {
+                    const localAttempts: TestAttempt[] = JSON.parse(localAttemptsRaw);
+                    const newAttemptsToMigrate = localAttempts.filter(local => 
+                        !dbAttempts.some(db => db.paperId === local.paperId && db.completedAt === local.completedAt)
+                    );
 
-                if (newAttemptsToMigrate.length > 0) {
-                    const recordsToInsert = newAttemptsToMigrate.map(attempt => ({
-                        user_id: session!.user.id,
-                        attempt_data: attempt,
-                    }));
-                    const { error } = await supabase.from('student_test_attempts').insert(recordsToInsert);
-                    if (!error) {
-                        const allAttempts = await fetchAttempts();
-                        setAttempts(allAttempts);
-                        localStorage.removeItem(STUDENT_ATTEMPTS_KEY);
-                        showToast("Your past results have been synced to your account.", "success");
+                    if (newAttemptsToMigrate.length > 0) {
+                        const recordsToInsert = newAttemptsToMigrate.map(attempt => ({
+                            user_id: session!.user.id,
+                            attempt_data: attempt,
+                        }));
+                        const { error } = await supabase.from('student_test_attempts').insert(recordsToInsert);
+                        if (!error) {
+                            const allAttempts = await fetchAttempts();
+                            setAttempts(allAttempts);
+                            localStorage.removeItem(STUDENT_ATTEMPTS_KEY);
+                            showToast("Your past results have been synced to your account.", "success");
+                        } else {
+                            console.error("Failed to migrate local attempts to database:", error);
+                            showToast("Could not sync some of your past results to your account.", 'error');
+                            setAttempts([...dbAttempts, ...newAttemptsToMigrate]); // Merge for session
+                        }
                     } else {
-                        console.error("Failed to migrate local attempts to database:", error);
-                        showToast("Could not sync some of your past results to your account.", 'error');
-                        setAttempts([...dbAttempts, ...newAttemptsToMigrate]); // Merge for session
+                        setAttempts(dbAttempts);
+                        localStorage.removeItem(STUDENT_ATTEMPTS_KEY); // Clean up old data
                     }
-                } else {
+                } catch (e) {
+                    console.error("Failed to parse/migrate local attempts", e);
                     setAttempts(dbAttempts);
-                    localStorage.removeItem(STUDENT_ATTEMPTS_KEY); // Clean up old data
+                    localStorage.removeItem(STUDENT_ATTEMPTS_KEY);
                 }
-            } catch (e) {
-                console.error("Failed to parse/migrate local attempts", e);
+            } else {
                 setAttempts(dbAttempts);
-                localStorage.removeItem(STUDENT_ATTEMPTS_KEY);
             }
-        } else {
-            setAttempts(dbAttempts);
+        } catch (error: any) {
+            console.error("Error loading student data:", error.message || error);
+            showToast("Failed to load your data. Please refresh.", "error");
+        } finally {
+            setLoading(false);
         }
-        setLoading(false);
     };
 
-    // Ensure both session and profile are loaded before fetching any user-specific data.
+    // FIX: This logic correctly handles the initial loading state.
+    // If session/profile are ready, it loads data. If not, it stops the loading
+    // spinner to prevent getting stuck, and waits for a re-render when the
+    // session/profile data arrives from the parent AuthProvider.
     if (session?.user && profile?.id) {
         loadData();
     } else {
-        // This covers two cases:
-        // 1. No session (logged out): stop loading.
-        // 2. Session exists but profile is still being fetched by parent: stop loading for now.
-        //    A re-render will occur when profile arrives, and the `if` block will execute.
         setLoading(false);
     }
-  }, [session, profile, fetchPapers, fetchAttempts, fetchTutorSessions, showToast]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, profile]);
 
 
   const handleTestComplete = async (attempt: TestAttempt) => {
@@ -242,16 +295,27 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
         }
         const { id, ...profileUpdates } = updatedProfile;
         const finalProfile = { ...profileUpdates, avatar_url: newAvatarUrl, updated_at: new Date().toISOString() };
+        // FIX: Destructuring after awaiting to prevent type inference issues.
         const { data, error } = await supabase.from('profiles').update(finalProfile).eq('id', session.user.id).select().single();
+        // FIX: Changed || to ?? to prevent throwing null if error is null.
         if(error || !data) {
-            throw error || new Error('No data returned from profile update');
+            throw error ?? new Error('No data returned from profile update');
         }
         setProfile(data);
         showToast('Profile updated!', 'success');
-    } catch (error: any) {
-        console.error("Error updating profile:", error.message || error);
-        showToast('Error updating profile.', 'error');
-        throw error;
+    } catch (err: unknown) {
+        // FIX: Added a more robust catch block to handle unknown error types safely.
+        let message = 'An unknown error occurred while updating profile.';
+        if (err instanceof Error) {
+            message = err.message;
+        } else if (err && typeof err === 'object' && 'message' in err) {
+            message = String((err as { message: unknown }).message);
+        } else if (typeof err === 'string') {
+            message = err;
+        }
+        console.error("Error updating profile:", err);
+        showToast(message, 'error');
+        throw err;
     }
   };
 
@@ -379,7 +443,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
         .single();
     
     if (error || !data) {
-        console.error("Error saving tutor session:", error);
+        console.error("Error saving tutor session:", error.message || error);
         showToast("Failed to save tutor session.", 'error');
     } else {
         setTutorSessions(prev => [data, ...prev]);
@@ -399,7 +463,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
         .eq('user_id', session.user.id);
 
     if (error) {
-        console.error("Error deleting tutor session:", error);
+        console.error("Error deleting tutor session:", error.message || error);
         showToast("Failed to delete session.", 'error');
     } else {
         setTutorSessions(prev => prev.filter(s => s.id !== sessionId));
@@ -414,7 +478,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   const getActiveTab = (): StudentTab => {
     if(viewState.view === 'test') return 'dashboard'; // Or 'practice'
     if(viewState.view === 'results' && viewState.attemptId) return 'results';
-    if (viewState.view === 'dashboard' || viewState.view === 'results' || viewState.view === 'settings' || viewState.view === 'practice' || viewState.view === 'ai_tutor') {
+    if (viewState.view === 'dashboard' || viewState.view === 'results' || viewState.view === 'settings' || viewState.view === 'practice' || viewState.view === 'ai_tutor' || viewState.view === 'test_papers') {
         return viewState.view;
     }
     return 'dashboard';
@@ -441,12 +505,15 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
                 <StudentDashboard 
                     papers={papers} 
                     attempts={attempts} 
+                    tutorSessions={tutorSessions}
                     lang={lang} 
                     onStartTest={(paper) => setViewState({ view: 'test', paper })}
                     onViewResult={(attempt) => setViewState({ view: 'results', attemptId: attempt.paperId + attempt.completedAt })}
                     userApiKey={userApiKey}
                     userOpenApiKey={userOpenApiKey}
                     showToast={showToast}
+                    setViewState={setViewState}
+                    setViewingMaterial={setViewingMaterial}
                 />
             </div>
             <div style={{ display: currentView === 'results' ? 'block' : 'none' }}>
@@ -471,6 +538,8 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
                     showToast={showToast}
                     userApiKey={userApiKey}
                     userOpenApiKey={userOpenApiKey}
+                    onSetViewState={setViewState}
+                    onSaveTutorResponse={handleSaveTutorResponse}
                 />
             </div>
              <div style={{ display: currentView === 'ai_tutor' ? 'block' : 'none' }}>
@@ -482,6 +551,14 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
                     sessions={tutorSessions}
                     onSaveResponse={handleSaveTutorResponse}
                     onDeleteSession={handleDeleteSession}
+                />
+            </div>
+            <div style={{ display: currentView === 'test_papers' ? 'block' : 'none' }}>
+                <FinalExamPapers
+                    lang={lang}
+                    userApiKey={userApiKey}
+                    userOpenApiKey={userOpenApiKey}
+                    showToast={showToast}
                 />
             </div>
             <div style={{ display: currentView === 'settings' ? 'block' : 'none' }}>
@@ -528,6 +605,10 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
            <Footer lang={lang} />
          </Suspense>
        )}
+       <Modal isOpen={viewingMaterial !== null} onClose={() => setViewingMaterial(null)} title={viewingMaterial?.title || 'Study Material'}>
+            {viewingMaterial?.type === 'study_guide' && <MarkdownRenderer content={viewingMaterial.content.markdown} />}
+            {viewingMaterial?.type === 'flashcards' && <FlashcardViewer flashcards={viewingMaterial.content} title={viewingMaterial.title} lang={lang} />}
+        </Modal>
     </>
   );
 };

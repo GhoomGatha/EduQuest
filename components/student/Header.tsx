@@ -1,3 +1,5 @@
+
+
 import React from 'react';
 import { Language } from '../../types';
 import { t } from '../../utils/localization';
@@ -12,8 +14,8 @@ interface HeaderProps {
 
 const Header: React.FC<HeaderProps> = ({ lang, onLangChange, children }) => {
   return (
-    <header className="bg-green-50/80 backdrop-blur-lg shadow-md sticky top-0 z-40 border-b border-green-200">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <header className="bg-green-100/60 backdrop-blur-lg shadow-sm sticky top-0 z-40">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center py-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 equipment-title-container">
@@ -29,7 +31,10 @@ const Header: React.FC<HeaderProps> = ({ lang, onLangChange, children }) => {
             <LanguageSelector lang={lang} onLangChange={onLangChange} />
           </div>
         </div>
-        {children}
+        {/* The two separate lines are replaced by this single framing div that wraps the Nav */}
+        <div className="my-2 p-[1.5px] rounded-full animate-background-color-cycle">
+            {children}
+        </div>
       </div>
     </header>
   );

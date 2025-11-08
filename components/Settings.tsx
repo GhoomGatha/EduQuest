@@ -76,7 +76,7 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
   const [isCameraModalOpen, setCameraModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-  const { setSession, setProfile } = useAuth();
+  const { session } = useAuth();
 
   const inputStyles = "w-full p-2 border rounded-lg border-slate-300 bg-slate-50 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 transition";
 
@@ -157,11 +157,16 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
   const handleLogout = async () => {
     setIsLoggingOut(true);
     
-    const currentSessionStart = sessionStorage.getItem('eduquest_current_session_start');
-    if (currentSessionStart) {
-        localStorage.setItem('eduquest_last_login', currentSessionStart);
+    if (session?.user?.id) {
+        const currentSessionKey = `eduquest_current_session_start_${session.user.id}`;
+        const lastLoginKey = `eduquest_last_login_${session.user.id}`;
+        
+        const currentSessionStart = sessionStorage.getItem(currentSessionKey);
+        if (currentSessionStart) {
+            localStorage.setItem(lastLoginKey, currentSessionStart);
+        }
+        sessionStorage.removeItem(currentSessionKey);
     }
-    sessionStorage.removeItem('eduquest_current_session_start');
 
     const { error } = await supabase.auth.signOut();
 
@@ -169,14 +174,10 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
         console.error('Logout error:', error.message);
         showToast(`Logout failed: ${error.message}. Please try again.`, 'error');
         setIsLoggingOut(false);
-    } else {
-        // By setting session and profile to null here, we trigger an immediate
-        // re-render to the Auth component via the context, which is the standard
-        // SPA way of handling logout. This avoids a full page reload which
-        // was causing issues in the hosting environment.
-        setProfile(null);
-        setSession(null);
     }
+    // No 'else' block needed. The onAuthStateChange listener in the Auth context
+    // will detect the sign-out and automatically update the UI to show the login screen.
+    // This is more efficient and reliable than a full page reload.
   };
 
   const buttonBaseStyles = "mt-2 sm:mt-0 w-full sm:w-auto px-4 py-2 font-semibold text-white rounded-lg shadow-sm hover:shadow-md hover:-translate-y-px transition-all";

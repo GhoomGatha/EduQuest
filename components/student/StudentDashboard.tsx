@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { Paper, TestAttempt, PracticeSuggestion, QuestionSource, Semester, Question, Difficulty, StudyMaterial, Flashcard } from '../../types';
+import { Paper, TestAttempt, PracticeSuggestion, QuestionSource, Semester, Question, Difficulty, StudyMaterial, Flashcard, ActivityItem, TutorSession, ViewState } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
 import { t } from '../../utils/localization';
 import { suggestPracticeSetsAI, generateQuestionsAI } from '../../services/geminiService';
@@ -8,6 +8,7 @@ import { supabase } from '../../services/supabaseClient';
 import Modal from '../Modal';
 import { loadScript } from '../../utils/scriptLoader';
 import { getBengaliFontBase64, getDevanagariFontBase64, getKannadaFontBase64 } from '../../utils/fontData';
+import StudentActivityFeed from './StudentActivityFeed';
 
 // --- Start of Embedded MarkdownRenderer Component ---
 declare global {
@@ -69,12 +70,15 @@ const FlashcardViewer: React.FC<{
 interface StudentDashboardProps {
     papers: Paper[];
     attempts: TestAttempt[];
+    tutorSessions: TutorSession[];
     lang: 'en' | 'bn' | 'hi' | 'ka';
     onStartTest: (paper: Paper) => void;
     onViewResult: (attempt: TestAttempt) => void;
     userApiKey?: string;
     userOpenApiKey?: string;
     showToast: (message: string, type?: 'success' | 'error') => void;
+    setViewState: (state: ViewState) => void;
+    setViewingMaterial: (material: StudyMaterial | null) => void;
 }
 
 const RecommendationCard: React.FC<{ attempt: TestAttempt, lang: 'en' | 'bn' | 'hi' | 'ka' }> = ({ attempt, lang }) => {
@@ -132,14 +136,13 @@ const AnimatedHeader = ({ emoji, animation, title }: { emoji: string; animation:
     );
 };
 
-const StudentDashboard: React.FC<StudentDashboardProps> = ({ papers, attempts, lang, onStartTest, onViewResult, userApiKey, userOpenApiKey, showToast }) => {
+const StudentDashboard: React.FC<StudentDashboardProps> = ({ papers, attempts, lang, onStartTest, onViewResult, userApiKey, userOpenApiKey, showToast, tutorSessions, setViewState, setViewingMaterial }) => {
     const { profile, session } = useAuth();
     const [suggestions, setSuggestions] = useState<PracticeSuggestion[]>([]);
     const [loadingSuggestions, setLoadingSuggestions] = useState(true);
     const [generatingPractice, setGeneratingPractice] = useState<string | null>(null);
     const [studyMaterials, setStudyMaterials] = useState<StudyMaterial[]>([]);
     const [loadingMaterials, setLoadingMaterials] = useState(true);
-    const [viewingMaterial, setViewingMaterial] = useState<StudyMaterial | null>(null);
 
     useEffect(() => {
         const fetchSuggestions = async () => {
@@ -180,6 +183,54 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ papers, attempts, l
         }
         fetchStudyMaterials();
     }, [attempts, lang, userApiKey, userOpenApiKey, session]);
+
+    const recentActivities = useMemo((): ActivityItem[] => {
+        const testActivities: ActivityItem[] = attempts.map(attempt => ({
+            id: attempt.db_id || `${attempt.paperId}-${attempt.completedAt}`,
+            type: 'test_attempt',
+            timestamp: attempt.completedAt,
+            title: attempt.paperTitle,
+            data: attempt,
+        }));
+
+        const materialActivities: ActivityItem[] = studyMaterials.map(material => ({
+            id: material.id,
+            type: 'study_material',
+            timestamp: material.created_at,
+            title: material.title,
+            data: material,
+        }));
+
+        const tutorActivities: ActivityItem[] = tutorSessions.map(session => ({
+            id: session.id,
+            type: 'tutor_session',
+            timestamp: session.created_at,
+            title: session.query_text || 'Image Query',
+            data: session,
+        }));
+
+        return [...testActivities, ...materialActivities, ...tutorActivities]
+            .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+            .slice(0, 5);
+
+    }, [attempts, studyMaterials, tutorSessions]);
+
+    const handleActivityClick = (item: ActivityItem) => {
+        switch (item.type) {
+            case 'test_attempt':
+                onViewResult(item.data as TestAttempt);
+                break;
+            case 'study_material':
+                setViewingMaterial(item.data as StudyMaterial);
+                break;
+            case 'tutor_session':
+                setViewState({ view: 'ai_tutor' });
+                // We could also pass the session ID to auto-select it in the tutor view
+                break;
+            default:
+                break;
+        }
+    };
     
     const handleStartSuggestedPractice = async (suggestion: PracticeSuggestion) => {
         setGeneratingPractice(suggestion.topic);
@@ -238,209 +289,12 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ papers, attempts, l
         }
     };
 
-    const handleExportMaterial = async (format: 'pdf' | 'txt' | 'xlsx' | 'word') => {
-        if (!viewingMaterial) return;
-        
-        const title = viewingMaterial.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-        
-        try {
-            if (viewingMaterial.type === 'study_guide') {
-                const content = (viewingMaterial.content as any).markdown || '';
-                if (format === 'txt') {
-                    const blob = new Blob([content], { type: 'text/plain;charset=utf-8;' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `${title}.txt`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                } else if (format === 'word') {
-                     await loadScript("https://cdn.jsdelivr.net/npm/marked/marked.min.js");
-                     if (!window.marked) throw new Error("Marked.js library not loaded.");
-                     const htmlContent = `<html><head><meta charset="UTF-8"></head><body>${window.marked.parse(content)}</body></html>`;
-                     const blob = new Blob([`\ufeff${htmlContent}`], { type: 'application/msword' });
-                     const url = URL.createObjectURL(blob);
-                     const a = document.createElement('a');
-                     a.href = url;
-                     a.download = `${title}.doc`;
-                     a.click();
-                     URL.revokeObjectURL(url);
-                } else if (format === 'pdf') {
-                    await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
-                    await loadScript("https://cdn.jsdelivr.net/npm/marked/marked.min.js");
-
-                    if (!(window as any).jspdf || !window.marked) {
-                        throw new Error("Required libraries (jsPDF, Marked.js) not loaded.");
-                    }
-
-                    const { jsPDF } = (window as any).jspdf;
-                    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-
-                    let fontName = 'helvetica';
-                    if (lang === 'bn') {
-                        const fontData = await getBengaliFontBase64();
-                        if (fontData) { doc.addFileToVFS('NotoSansBengali-Regular.ttf', fontData); doc.addFont('NotoSansBengali-Regular.ttf', 'NotoSansBengali', 'normal'); fontName = 'NotoSansBengali'; }
-                    } else if (lang === 'hi') {
-                        const fontData = await getDevanagariFontBase64();
-                        if (fontData) { doc.addFileToVFS('NotoSansDevanagari-Regular.ttf', fontData); doc.addFont('NotoSansDevanagari-Regular.ttf', 'NotoSansDevanagari', 'normal'); fontName = 'NotoSansDevanagari'; }
-                    } else if (lang === 'ka') {
-                        const fontData = await getKannadaFontBase64();
-                        if (fontData) { doc.addFileToVFS('NotoSansKannada-Regular.ttf', fontData); doc.addFont('NotoSansKannada-Regular.ttf', 'NotoSansKannada', 'normal'); fontName = 'NotoSansKannada'; }
-                    }
-                    doc.setFont(fontName, 'normal');
-
-                    const pageHeight = doc.internal.pageSize.getHeight();
-                    const pageWidth = doc.internal.pageSize.getWidth();
-                    const margin = 15;
-                    const maxLineWidth = pageWidth - margin * 2;
-                    let y = margin;
-
-                    const checkPageBreak = (neededHeight: number) => {
-                        if (y + neededHeight > pageHeight - margin) {
-                            doc.addPage();
-                            y = margin;
-                        }
-                    };
-                    
-                    doc.setFontSize(14);
-                    doc.setFont(fontName, 'bold');
-                    const titleLines = doc.splitTextToSize(viewingMaterial.title, maxLineWidth);
-                    checkPageBreak(titleLines.length * 6 + 8);
-                    doc.text(titleLines, pageWidth / 2, y, { align: 'center' });
-                    y += titleLines.length * 6 + 8;
-                    
-                    doc.setFontSize(10);
-                    doc.setFont(fontName, 'normal');
-
-                    const div = document.createElement('div');
-                    div.innerHTML = window.marked.parse(content);
-                    const textContent = div.innerText;
-                    
-                    const lines = doc.splitTextToSize(textContent, maxLineWidth);
-                    lines.forEach((line: string) => {
-                        const textHeight = 5;
-                        checkPageBreak(textHeight);
-                        doc.text(line, margin, y);
-                        y += textHeight;
-                    });
-
-                    doc.save(`${title}.pdf`);
-
-                } else if (format === 'xlsx') {
-                    await loadScript("https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js");
-                    const XLSX = (window as any).XLSX;
-                    const ws = XLSX.utils.json_to_sheet([{ "Study Guide Content": content }]);
-                    const wb = XLSX.utils.book_new();
-                    XLSX.utils.book_append_sheet(wb, ws, "Study Guide");
-                    XLSX.writeFile(wb, `${title}.xlsx`);
-                }
-
-            } else if (viewingMaterial.type === 'flashcards') {
-                const flashcards = viewingMaterial.content as Flashcard[];
-                 if (format === 'txt') {
-                    const content = flashcards.map(f => `Q: ${f.question}\nA: ${f.answer}`).join('\n\n---\n\n');
-                    const blob = new Blob([content], { type: 'text/plain;charset=utf-8;' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `${title}.txt`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                } else if (format === 'xlsx') {
-                    await loadScript("https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js");
-                    const XLSX = (window as any).XLSX;
-                    const ws = XLSX.utils.json_to_sheet(flashcards);
-                    const wb = XLSX.utils.book_new();
-                    XLSX.utils.book_append_sheet(wb, ws, "Flashcards");
-                    XLSX.writeFile(wb, `${title}.xlsx`);
-                } else if (format === 'word') {
-                     let htmlContent = `<html><head><meta charset="UTF-8"></head><body><h1>${viewingMaterial.title}</h1>`;
-                     flashcards.forEach(f => {
-                         htmlContent += `<p><b>Question:</b> ${f.question}</p><p><b>Answer:</b> ${f.answer}</p><hr/>`;
-                     });
-                     htmlContent += `</body></html>`;
-                     const blob = new Blob([`\ufeff${htmlContent}`], { type: 'application/msword' });
-                     const url = URL.createObjectURL(blob);
-                     const a = document.createElement('a');
-                     a.href = url;
-                     a.download = `${title}.doc`;
-                     a.click();
-                     URL.revokeObjectURL(url);
-                } else if (format === 'pdf') {
-                    await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
-                    const { jsPDF } = (window as any).jspdf;
-                    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-                    
-                    let fontName = 'helvetica';
-                    if (lang === 'bn') {
-                        const fontData = await getBengaliFontBase64();
-                        if (fontData) { doc.addFileToVFS('NotoSansBengali-Regular.ttf', fontData); doc.addFont('NotoSansBengali-Regular.ttf', 'NotoSansBengali', 'normal'); fontName = 'NotoSansBengali'; }
-                    } else if (lang === 'hi') {
-                        const fontData = await getDevanagariFontBase64();
-                        if (fontData) { doc.addFileToVFS('NotoSansDevanagari-Regular.ttf', fontData); doc.addFont('NotoSansDevanagari-Regular.ttf', 'NotoSansDevanagari', 'normal'); fontName = 'NotoSansDevanagari'; }
-                    } else if (lang === 'ka') {
-                        const fontData = await getKannadaFontBase64();
-                        if (fontData) { doc.addFileToVFS('NotoSansKannada-Regular.ttf', fontData); doc.addFont('NotoSansKannada-Regular.ttf', 'NotoSansKannada', 'normal'); fontName = 'NotoSansKannada'; }
-                    }
-                    doc.setFont(fontName, 'normal');
-
-                    const pageHeight = doc.internal.pageSize.getHeight();
-                    const pageWidth = doc.internal.pageSize.getWidth();
-                    const margin = 15;
-                    const maxLineWidth = pageWidth - margin * 2;
-                    let y = margin;
-                    
-                    const checkPageBreak = (neededHeight: number) => {
-                        if (y + neededHeight > pageHeight - margin) {
-                            doc.addPage();
-                            y = margin;
-                        }
-                    };
-
-                    flashcards.forEach(f => {
-                        doc.setFontSize(12);
-                        doc.setFont(fontName, 'bold');
-                        const qLines = doc.splitTextToSize(`Q: ${f.question}`, maxLineWidth);
-                        checkPageBreak(qLines.length * 5 + 7);
-                        doc.text(qLines, margin, y);
-                        y += qLines.length * 5 + 2;
-                        
-                        doc.setFontSize(10);
-                        doc.setFont(fontName, 'normal');
-                        const aLines = doc.splitTextToSize(`A: ${f.answer}`, maxLineWidth);
-                        checkPageBreak(aLines.length * 5 + 10);
-                        doc.text(aLines, margin, y);
-                        y += aLines.length * 5 + 10;
-                    });
-                    doc.save(`${title}.pdf`);
-                }
-            }
-            showToast("Export successful!", "success");
-        } catch (e) {
-            console.error("Export failed", e);
-            showToast("Export failed.", 'error');
-        }
-    };
-
-
     const availablePapers = papers.filter(p => p.questions.length > 0);
     const recentAttempts = attempts.slice(0, 5);
 
     const latestAnalyzedAttempt = useMemo(() => {
         return attempts.find(a => !!a.analysis);
     }, [attempts]);
-
-    const renderMaterialContent = () => {
-        if (!viewingMaterial) return null;
-        if (viewingMaterial.type === 'flashcards') {
-            return <FlashcardViewer flashcards={viewingMaterial.content as Flashcard[]} title={viewingMaterial.title} lang={lang} />;
-        }
-        if (viewingMaterial.type === 'study_guide') {
-            return <MarkdownRenderer content={(viewingMaterial.content as any).markdown || ''} />;
-        }
-        return null;
-    };
-
 
     return (
         <div className="p-4 sm:p-6 space-y-8">
@@ -451,6 +305,14 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ papers, attempts, l
                 </h1>
                 <p className="text-slate-500">Ready to test your knowledge?</p>
             </header>
+
+            {recentActivities.length > 0 && (
+                <StudentActivityFeed
+                    activities={recentActivities}
+                    onItemClick={handleActivityClick}
+                    lang={lang}
+                />
+            )}
 
             {!loadingSuggestions && suggestions.length > 0 && (
                 <section>
@@ -552,19 +414,6 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ papers, attempts, l
                     </div>
                  )}
             </section>
-            <Modal isOpen={!!viewingMaterial} onClose={() => setViewingMaterial(null)} title={viewingMaterial?.title || ''}>
-                {viewingMaterial && (
-                    <>
-                        <div>{renderMaterialContent()}</div>
-                        <div className="flex flex-wrap justify-end gap-3 pt-4 mt-4 border-t border-slate-200">
-                            <button onClick={() => handleExportMaterial('txt')} className="px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg text-sm">{t('exportTXT', lang)}</button>
-                             <button onClick={() => handleExportMaterial('word')} className="px-4 py-2 bg-blue-700 text-white font-semibold rounded-lg text-sm">{t('exportWord', lang)}</button>
-                            <button onClick={() => handleExportMaterial('xlsx')} className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg text-sm">{t('exportXLSX', lang)}</button>
-                            <button onClick={() => handleExportMaterial('pdf')} className="px-4 py-2 bg-red-600 text-white font-semibold rounded-lg text-sm">{t('exportPDF', lang)}</button>
-                        </div>
-                    </>
-                )}
-            </Modal>
         </div>
     );
 };

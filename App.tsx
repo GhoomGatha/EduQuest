@@ -10,7 +10,7 @@ import { ToastMessage } from './types';
 import { supabase } from './services/supabaseClient';
 
 const TeacherApp = lazy(() => import('./TeacherApp'));
-const StudentApp = lazy(() => import('./components/StudentApp'));
+const StudentApp = lazy(() => import('./StudentApp'));
 
 const App: React.FC = () => {
     const { session, profile, loading } = useAuth();
@@ -28,7 +28,14 @@ const App: React.FC = () => {
             }
             setLastQuotaErrorTimestamp(now);
         }
-        setToasts(prev => [...prev, { id: Date.now(), message, type }]);
+
+        let finalMessage = message;
+        // Check for the generic network error and replace it with a more helpful message.
+        if (type === 'error' && message.toLowerCase().includes('failed to fetch')) {
+            finalMessage = "Network Error: Could not connect to the server. Please check your internet connection, disable any ad-blockers, and try again.";
+        }
+
+        setToasts(prev => [...prev, { id: Date.now(), message: finalMessage, type }]);
     }, [lastQuotaErrorTimestamp]);
 
     const dismissToast = (id: number) => {
@@ -36,44 +43,68 @@ const App: React.FC = () => {
     };
 
     const checkSchema = useCallback(async (isRetry = false) => {
-        // Check for the 'board' column, a more recent addition, to robustly verify the schema.
-        const { error } = await supabase.from('papers').select('board').limit(1);
-
-        if (error && (error.code === '42P01' || error.message.includes("does not exist") || error.code === '42703')) {
-            console.error("Schema check failed:", error);
-            
-            // Robust error message extraction
+        const handleSchemaError = (error: any) => {
+             console.error("Schema check failed:", error);
             let errorMessage = 'An unknown database schema error occurred.';
             if (typeof error?.message === 'string') {
                 errorMessage = error.message;
             } else {
                 try {
-                    // Provide a more descriptive stringified version of the error
                     errorMessage = `Unexpected error format: ${JSON.stringify(error)}`;
                 } catch {
                     errorMessage = 'An unreadable database schema error object was received.';
                 }
             }
             setSchemaError(errorMessage);
+        };
+
+        // Check 1: 'papers' table columns ('board', 'subject')
+        const { error: papersError } = await supabase.from('papers').select('board, subject').limit(1);
+        if (papersError && (papersError.code === '42P01' || papersError.message.includes("does not exist") || papersError.code === '42703')) {
+            handleSchemaError(papersError);
+            return;
+        }
+
+        // Check 2: 'chapters' table columns ('subject', 'semester')
+        const { error: chaptersError } = await supabase.from('chapters').select('subject, semester').limit(1);
+        if (chaptersError && (chaptersError.code === '42P01' || chaptersError.message.includes("does not exist") || chaptersError.code === '42703')) {
+            handleSchemaError(chaptersError);
+            return;
+        }
+
+        // Check 3: 'final_exam_papers' table
+        const { error: finalPapersError } = await supabase.from('final_exam_papers').select('id').limit(1);
+        if (finalPapersError && (finalPapersError.code === '42P01' || finalPapersError.message.includes("does not exist"))) {
+            handleSchemaError(finalPapersError);
+            return;
+        }
+        
+        // Check 4: 'tutor_sessions' table column 'response_image_url'
+        const { error: tutorSessionsError } = await supabase.from('tutor_sessions').select('response_image_url').limit(1);
+        if (tutorSessionsError && (tutorSessionsError.code === '42P01' || tutorSessionsError.message.includes("does not exist") || tutorSessionsError.code === '42703')) {
+            handleSchemaError(tutorSessionsError);
+            return;
+        }
+
+
+        // If all checks pass
+        if (isRetry) {
+            // If this was a retry from the setup page, the client's schema cache is stale.
+            // Reload the page to force the Supabase client to re-initialize and fetch the new schema.
+            window.location.reload();
         } else {
-            // Schema is valid on the database side.
-            if (isRetry) {
-                // If this was a retry from the setup page, the client's schema cache is stale.
-                // Reload the page to force the Supabase client to re-initialize and fetch the new schema.
-                window.location.reload();
-            } else {
-                // Initial check passed, no need to reload.
-                setSchemaError(false);
-            }
+            // Initial check passed, no need to reload.
+            setSchemaError(false);
         }
     }, []);
 
     useEffect(() => {
-        if (session) {
+        if (session?.user?.id) {
             checkSchema(); // Initial check on app load.
             // Set session start time on login/refresh
-            if (!sessionStorage.getItem('eduquest_current_session_start')) {
-                sessionStorage.setItem('eduquest_current_session_start', new Date().toISOString());
+            const currentSessionKey = `eduquest_current_session_start_${session.user.id}`;
+            if (!sessionStorage.getItem(currentSessionKey)) {
+                sessionStorage.setItem(currentSessionKey, new Date().toISOString());
             }
         }
     }, [session, checkSchema]);

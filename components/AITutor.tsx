@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Language, TutorSession } from '../types';
 import { t } from '../utils/localization';
 import { answerTeacherDoubtAI } from '../services/geminiService';
@@ -35,8 +35,10 @@ interface AITutorProps {
     userApiKey?: string;
     userOpenApiKey?: string;
     sessions: TutorSession[];
-    onSaveResponse: (queryText: string, queryImageUrl: string | null, responseText: string, tutorClass: number) => void;
+    onSaveResponse: (queryText: string, queryImageUrl: string | null, responseText: string, responseImageUrl: string | undefined, tutorClass: number) => void;
     onDeleteSession: (sessionId: string) => void;
+    viewingSession: TutorSession | null;
+    setViewingSession: (session: TutorSession | null) => void;
 }
 
 const AnimatedHeader = ({ emoji, animation, title }: { emoji: string; animation: string; title: string; }) => {
@@ -73,12 +75,114 @@ const AnimatedHeader = ({ emoji, animation, title }: { emoji: string; animation:
     );
 };
 
-const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpenApiKey, sessions, onSaveResponse, onDeleteSession }) => {
+const AITutor: React.FC<AITutorProps> = ({ 
+    lang, showToast, userApiKey, userOpenApiKey, sessions, onSaveResponse, onDeleteSession,
+    viewingSession, setViewingSession
+}) => {
     const [query, setQuery] = useState('');
     const [image, setImage] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
-    const [viewingSession, setViewingSession] = useState<TutorSession | null>(null);
+    const [previewResponse, setPreviewResponse] = useState<{ text: string; imageUrl?: string } | null>(null);
+    const [newlyAddedSessionId, setNewlyAddedSessionId] = useState<string | null>(null);
+    const prevSessionCount = useRef(sessions.length);
+    const [openYears, setOpenYears] = useState<Set<string>>(new Set([new Date().getFullYear().toString()]));
+
+    useEffect(() => {
+        if (sessions.length > prevSessionCount.current) {
+            const newSessionId = sessions[0].id;
+            setNewlyAddedSessionId(newSessionId);
     
+            const timer = setTimeout(() => {
+                setNewlyAddedSessionId(null);
+            }, 3000); // highlight duration
+    
+            return () => clearTimeout(timer);
+        }
+        prevSessionCount.current = sessions.length;
+    }, [sessions]);
+    
+    const toggleYear = (year: string) => {
+        setOpenYears(prevOpenYears => {
+            const newSet = new Set(prevOpenYears);
+            if (newSet.has(year)) {
+                newSet.delete(year);
+            } else {
+                newSet.add(year);
+            }
+            return newSet;
+        });
+    };
+
+    const groupedSessions = useMemo(() => {
+        if (!sessions || sessions.length === 0) {
+            return { recent: [], older: [] };
+        }
+    
+        const recentGroups: { [key: string]: TutorSession[] } = {
+            "Today": [],
+            "Yesterday": [],
+            "Previous 7 Days": [],
+        };
+        const olderGroupsByYear: { [year: string]: { [month: string]: TutorSession[] } } = {};
+    
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const sevenDaysAgo = new Date(today);
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    
+        sessions.forEach(session => {
+            const sessionDate = new Date(session.created_at);
+            const sessionDay = new Date(sessionDate.getFullYear(), sessionDate.getMonth(), sessionDate.getDate());
+    
+            if (sessionDay.getTime() === today.getTime()) {
+                recentGroups["Today"].push(session);
+            } else if (sessionDay.getTime() === yesterday.getTime()) {
+                recentGroups["Yesterday"].push(session);
+            } else if (sessionDay > sevenDaysAgo) {
+                recentGroups["Previous 7 Days"].push(session);
+            } else {
+                const year = sessionDate.getFullYear().toString();
+                const month = sessionDate.toLocaleString(lang, { month: 'long' });
+    
+                if (!olderGroupsByYear[year]) {
+                    olderGroupsByYear[year] = {};
+                }
+                if (!olderGroupsByYear[year][month]) {
+                    olderGroupsByYear[year][month] = [];
+                }
+                olderGroupsByYear[year][month].push(session);
+            }
+        });
+        
+        const recent = Object.entries(recentGroups)
+            .filter(([, sessions]) => sessions.length > 0)
+            .map(([title, sessions]) => ({ title, sessions }));
+            
+        const older = Object.keys(olderGroupsByYear)
+            .sort((a, b) => parseInt(b) - parseInt(a)) // Sort years descending
+            .map(year => {
+                const months = olderGroupsByYear[year];
+                const sortedMonths = Object.keys(months)
+                    .sort((a, b) => {
+                        const dateA = new Date(`01 ${a} ${year}`);
+                        const dateB = new Date(`01 ${b} ${year}`);
+                        return dateB.getTime() - dateA.getTime();
+                    })
+                    .map(month => ({
+                        month,
+                        sessions: months[month]
+                    }));
+                return {
+                    year,
+                    months: sortedMonths
+                };
+            });
+    
+        return { recent, older };
+    }, [sessions, lang]);
+
     const inputStyles = "w-full p-2.5 border border-slate-300 bg-white rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition";
     const labelStyles = "block text-sm font-semibold text-slate-600 mb-1";
     
@@ -99,9 +203,10 @@ const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpen
         setIsLoading(true);
         try {
             const tutorClass = 10; // Default class for teacher tutor
-            const aiResponse = await answerTeacherDoubtAI(tutorClass, lang, query, image || undefined, userApiKey, userOpenApiKey);
+            const { text: aiResponse, imageUrl: aiImageUrl } = await answerTeacherDoubtAI(tutorClass, lang, query, image || undefined, userApiKey, userOpenApiKey);
             if (aiResponse) {
-                onSaveResponse(query, image, aiResponse, tutorClass);
+                setPreviewResponse({ text: aiResponse, imageUrl: aiImageUrl });
+                onSaveResponse(query, image, aiResponse, aiImageUrl, tutorClass);
                 setQuery('');
                 setImage(null);
             } else {
@@ -117,6 +222,57 @@ const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpen
     const handleDelete = (sessionId: string) => {
         if (window.confirm("Are you sure you want to delete this session? This action cannot be undone.")) {
             onDeleteSession(sessionId);
+        }
+    };
+
+    const handleShare = async (text: string, imageUrl?: string) => {
+        const shareData: ShareData = {
+            title: 'EduQuest AI Tutor Response',
+            text: text,
+        };
+    
+        if (navigator.share) {
+            if (imageUrl) {
+                try {
+                    const response = await fetch(imageUrl);
+                    const blob = await response.blob();
+                    const file = new File([blob], 'ai-tutor-image.png', { type: blob.type });
+                    
+                    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                        await navigator.share({
+                            ...shareData,
+                            files: [file],
+                        });
+                        showToast("Shared successfully!", "success");
+                        return;
+                    }
+                } catch (error) {
+                    console.error("Error sharing image, falling back to text only:", error);
+                }
+            }
+            
+            try {
+                await navigator.share(shareData);
+                showToast("Shared successfully!", "success");
+            } catch (error: any) {
+                if (error.name !== 'AbortError') {
+                  console.error("Error sharing:", error);
+                  showToast("Could not share.", "error");
+                }
+            }
+    
+        } else {
+            try {
+                let textToCopy = text;
+                if (imageUrl) {
+                    textToCopy += "\n\n[An image was included in the AI's response.]";
+                }
+                await navigator.clipboard.writeText(textToCopy);
+                showToast("Response copied to clipboard!", "success");
+            } catch (error) {
+                console.error("Failed to copy to clipboard:", error);
+                showToast("Could not copy response.", "error");
+            }
         }
     };
 
@@ -178,22 +334,68 @@ const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpen
                 const maxLineWidth = pageWidth - margin * 2;
                 let y = margin;
                 
+                const checkPageBreak = (neededHeight: number) => {
+                    if (y + neededHeight > pageHeight - margin) {
+                        doc.addPage();
+                        y = margin;
+                    }
+                };
+                
                 const addWrappedText = (text: string, size: number, style: string, spacing: number) => {
                     doc.setFontSize(size);
                     doc.setFont(fontName, style);
                     const lines = doc.splitTextToSize(text, maxLineWidth);
+                    checkPageBreak(lines.length * (size / 2.5) + spacing);
                     lines.forEach((line: string) => {
-                        if (y + 5 > pageHeight - margin) { doc.addPage(); y = margin; }
+                        if (y + (size / 2.5) > pageHeight - margin) { doc.addPage(); y = margin; }
                         doc.text(line, margin, y);
-                        y += 5;
+                        y += (size / 2.5);
                     });
                     y += spacing;
                 };
+
+                const addImageToPdf = async (imageUrl: string, yPos: number): Promise<number> => {
+                    try {
+                        let imageData = imageUrl;
+                        if (!imageUrl.startsWith('data:')) {
+                            const response = await fetch(imageUrl);
+                            const blob = await response.blob();
+                            imageData = await new Promise<string>((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onloadend = () => resolve(reader.result as string);
+                                reader.onerror = reject;
+                                reader.readAsDataURL(blob);
+                            });
+                        }
+                        
+                        const imgProps = doc.getImageProperties(imageData);
+                        const imgWidth = Math.min(maxLineWidth, 120);
+                        const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
+                        checkPageBreak(imgHeight + 5);
+                        doc.addImage(imageData, 'PNG', margin, yPos, imgWidth, imgHeight);
+                        return yPos + imgHeight + 5;
+                    } catch (e) {
+                        console.error("Error adding image to PDF:", e);
+                        addWrappedText("[Error loading image]", 10, 'italic', 5);
+                        return yPos + 10;
+                    }
+                };
     
                 addWrappedText("AI Tutor Session", 16, 'bold', 10);
-                addWrappedText(`Query from ${new Date(created_at).toLocaleString()}`, 10, 'italic', 10);
-                addWrappedText(query_text || "Image-based query", 12, 'normal', 10);
+                addWrappedText(`Query from ${new Date(created_at).toLocaleString()}`, 10, 'italic', 5);
+                
+                if (viewingSession.query_image_url) {
+                    y = await addImageToPdf(viewingSession.query_image_url, y);
+                }
+                if (viewingSession.query_text) {
+                    addWrappedText(viewingSession.query_text, 12, 'normal', 10);
+                }
+                
                 addWrappedText("AI Response:", 14, 'bold', 5);
+    
+                if (viewingSession.response_image_url) {
+                    y = await addImageToPdf(viewingSession.response_image_url, y);
+                }
                 addWrappedText(response_text, 12, 'normal', 5);
     
                 doc.save(`${title}.pdf`);
@@ -206,13 +408,13 @@ const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpen
     };
 
     return (
-        <div className="p-4 sm:p-6 space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 p-4 sm:p-6">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                 <AnimatedHeader emoji="✨" animation="animate-sparkle" title={t('newSession', lang)} />
-                <p className="text-sm text-slate-500 -mt-4 mb-4">{t('aiTutorSubtitle', lang)}</p>
+                <p className="text-sm text-slate-500 -mt-4 mb-4">{t('tutorForTeachersSubtitle', lang)}</p>
                 <div className="space-y-4">
                     <div>
-                        <label className={labelStyles}>{t('typeYourQuestion', lang)}</label>
+                        <label className={labelStyles}>{t('typeYourQueryHere', lang)}</label>
                         <textarea value={query} onChange={e => setQuery(e.target.value)} rows={5} className={inputStyles} placeholder="..." />
                     </div>
                     <div>
@@ -232,26 +434,95 @@ const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpen
                     </div>
                 </div>
             </div>
-
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+            
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col">
                 <AnimatedHeader emoji="📜" animation="animate-bobbing" title={t('tutorHistory', lang)} />
-                <div className="space-y-2">
-                    {sessions.length > 0 ? sessions.map(s => (
-                        <div key={s.id} className="flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 transition-colors">
-                            <div className="flex-grow min-w-0">
-                                <p className="font-semibold text-sm text-slate-700 truncate">{s.query_text || 'Image Query'}</p>
-                                <p className="text-xs text-slate-500">{new Date(s.created_at).toLocaleString()}</p>
-                            </div>
-                            <div className="flex-shrink-0 space-x-3 ml-4">
-                                <button onClick={() => setViewingSession(s)} className="text-indigo-600 hover:text-indigo-800 text-sm font-semibold">{t('view', lang)}</button>
-                                <button onClick={() => handleDelete(s.id)} className="text-red-600 hover:text-red-800 text-sm font-semibold">{t('delete', lang)}</button>
-                            </div>
-                        </div>
-                    )) : (
+                <div className="flex-grow max-h-96 overflow-y-auto">
+                    {sessions.length > 0 ? (
+                        <>
+                            {groupedSessions.recent.map(group => (
+                                <div key={group.title}>
+                                    <h3 className="text-sm font-bold text-slate-500 bg-slate-100 p-2 sticky top-0 z-10">
+                                        {group.title}
+                                    </h3>
+                                    <div className="space-y-2 pt-2">
+                                        {group.sessions.map(s => (
+                                            <div key={s.id} className={`flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 transition-all duration-1000 ${s.id === newlyAddedSessionId ? 'bg-cyan-50' : ''}`}>
+                                                <div className="flex-grow min-w-0">
+                                                    <p className="font-semibold text-sm text-slate-700 truncate">{s.query_text || 'Image Query'}</p>
+                                                    <p className="text-xs text-slate-500">{new Date(s.created_at).toLocaleString()}</p>
+                                                </div>
+                                                <div className="flex-shrink-0 space-x-3 ml-4">
+                                                    <button onClick={() => setViewingSession(s)} className="text-indigo-600 hover:text-indigo-800 text-sm font-semibold">{t('view', lang)}</button>
+                                                    <button onClick={() => handleDelete(s.id)} className="text-red-600 hover:text-red-800 text-sm font-semibold">{t('delete', lang)}</button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                            {groupedSessions.older.map(({ year, months }) => (
+                                <div key={year} className="border-t">
+                                    <button 
+                                        onClick={() => toggleYear(year)}
+                                        className="w-full flex justify-between items-center text-left text-sm font-bold text-slate-600 bg-slate-100 p-2 hover:bg-slate-200 transition-colors"
+                                    >
+                                        <span>{year}</span>
+                                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 transition-transform ${openYears.has(year) ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                                            <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                                        </svg>
+                                    </button>
+                                    {openYears.has(year) && (
+                                        <div className="pl-4">
+                                            {months.map(({ month, sessions: monthSessions }) => (
+                                                <div key={month}>
+                                                    <h4 className="text-xs font-semibold text-slate-500 py-2">{month}</h4>
+                                                    <div className="space-y-2 pb-2">
+                                                        {monthSessions.map(s => (
+                                                            <div key={s.id} className={`flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 transition-all duration-1000 ${s.id === newlyAddedSessionId ? 'bg-cyan-50' : ''}`}>
+                                                                <div className="flex-grow min-w-0">
+                                                                    <p className="font-semibold text-sm text-slate-700 truncate">{s.query_text || 'Image Query'}</p>
+                                                                    <p className="text-xs text-slate-500">{new Date(s.created_at).toLocaleString()}</p>
+                                                                </div>
+                                                                <div className="flex-shrink-0 space-x-3 ml-4">
+                                                                    <button onClick={() => setViewingSession(s)} className="text-indigo-600 hover:text-indigo-800 text-sm font-semibold">{t('view', lang)}</button>
+                                                                    <button onClick={() => handleDelete(s.id)} className="text-red-600 hover:text-red-800 text-sm font-semibold">{t('delete', lang)}</button>
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </>
+                    ) : (
                         <p className="text-center text-sm text-slate-500 p-4">{t('noTutorHistory', lang)}</p>
                     )}
                 </div>
             </div>
+
+            <Modal isOpen={!!previewResponse} onClose={() => setPreviewResponse(null)} title={t('tutorResponse', lang)}>
+                {previewResponse && (
+                    <>
+                        <div className="max-h-[60vh] overflow-y-auto pr-2 space-y-4">
+                            {previewResponse.imageUrl && <img src={previewResponse.imageUrl} alt="AI generated diagram" className="max-w-full h-auto rounded-lg border my-4" />}
+                            <MarkdownRenderer content={previewResponse.text} />
+                        </div>
+                        <div className="flex justify-end pt-4 mt-4 border-t border-slate-200">
+                            <button
+                                onClick={() => handleShare(previewResponse.text, previewResponse.imageUrl)}
+                                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 shadow-sm transition-all"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M15 8a3 3 0 10-2.977-2.63l-4.94 2.47a3 3 0 100 4.319l4.94 2.47a3 3 0 10.895-1.789l-4.94-2.47a3.027 3.027 0 000-.74l4.94-2.47C13.456 7.68 14.19 8 15 8z" /></svg>
+                                Share
+                            </button>
+                        </div>
+                    </>
+                )}
+            </Modal>
 
             <Modal isOpen={!!viewingSession} onClose={() => setViewingSession(null)} title="Conversation Details">
                 {viewingSession && (
@@ -265,11 +536,19 @@ const AITutor: React.FC<AITutorProps> = ({ lang, showToast, userApiKey, userOpen
                            <div>
                                 <h3 className="font-bold text-slate-700 mt-4">{t('tutorResponse', lang)}</h3>
                                 <div className="mt-2 bg-slate-50 p-3 rounded-md">
+                                    {viewingSession.response_image_url && <img src={viewingSession.response_image_url} alt="AI response diagram" className="max-w-full h-auto rounded-lg border my-4" />}
                                     <MarkdownRenderer content={viewingSession.response_text} />
                                 </div>
                            </div>
                         </div>
                          <div className="flex flex-wrap justify-end gap-3 pt-4 mt-4 border-t border-slate-200">
+                             <button
+                                onClick={() => handleShare(viewingSession.response_text, viewingSession.response_image_url)}
+                                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white font-semibold rounded-lg text-sm"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M15 8a3 3 0 10-2.977-2.63l-4.94 2.47a3 3 0 100 4.319l4.94 2.47a3 3 0 10.895-1.789l-4.94-2.47a3.027 3.027 0 000-.74l4.94-2.47C13.456 7.68 14.19 8 15 8z" /></svg>
+                                Share
+                            </button>
                              <button onClick={() => handleExport('txt')} className="px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg text-sm">{t('exportTXT', lang)}</button>
                              <button onClick={() => handleExport('word')} className="px-4 py-2 bg-blue-700 text-white font-semibold rounded-lg text-sm">{t('exportWord', lang)}</button>
                             <button onClick={() => handleExport('xlsx')} className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg text-sm">{t('exportXLSX', lang)}</button>

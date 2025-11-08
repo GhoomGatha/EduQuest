@@ -22,27 +22,31 @@ const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, on
     const handleSubmit = async () => {
         if (isSubmitting) return;
         setIsSubmitting(true);
-
+    
         let score = 0;
         const totalMarks = paper.questions.reduce((acc, q) => acc + q.marks, 0);
         const finalAnswers: StudentAnswer[] = [];
         
+        const isPractice = paper.id.startsWith('practice-') || paper.id.startsWith('suggested-practice-') || paper.id.startsWith('mcq-') || paper.id.startsWith('scan-');
+    
         paper.questions.forEach(q => {
             const studentAnswer = studentAnswers[q.id]?.trim() || '';
-            const correctAnswer = q.answer?.trim() || '';
             finalAnswers.push({ questionId: q.id, answer: studentAnswer });
-
-            if (correctAnswer && studentAnswer.toLowerCase() === correctAnswer.toLowerCase()) {
-                score += q.marks;
+            
+            if (!isPractice) {
+                const correctAnswer = q.answer?.trim() || '';
+                if (correctAnswer && studentAnswer.toLowerCase() === correctAnswer.toLowerCase()) {
+                    score += q.marks;
+                }
             }
         });
-
+    
         const attempt: TestAttempt = {
             paperId: paper.id,
             paperTitle: paper.title,
             studentAnswers: finalAnswers,
-            score,
-            totalMarks,
+            score: isPractice ? -1 : score,
+            totalMarks: isPractice ? -1 : totalMarks,
             completedAt: new Date().toISOString(),
             class: paper.class,
             year: paper.year,
@@ -50,11 +54,8 @@ const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, on
             paper: paper,
         };
         
-        // The onComplete function (handleTestComplete) is async and handles navigation.
-        // We await it to keep the UI in a submitting state until the process is finished.
         await (onComplete(attempt) as unknown as Promise<void>);
         
-        // In case the parent component's logic fails to navigate away, reset the state.
         setIsSubmitting(false);
     };
 
@@ -135,7 +136,7 @@ const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, on
                         value={studentAnswer}
                         onChange={(e) => handleAnswerChange(question.id, e.target.value)}
                         rows={5}
-                        className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-400"
+                        className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-400 bg-white text-slate-800"
                         placeholder="Type your answer here..."
                     />
                 );

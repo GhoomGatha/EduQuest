@@ -1,9 +1,8 @@
 
-
 import React, { useState, useMemo } from 'react';
 import { TestAttempt, Paper, StudentAnswer, Question, QuestionSource } from '../../types';
 import { t } from '../../utils/localization';
-import { analyzeTestAttempt } from '../../services/geminiService';
+import { analyzeTestAttempt, coachLongAnswerAI } from '../../services/geminiService';
 
 interface TestResultsProps {
     attempts: TestAttempt[];
@@ -61,8 +60,7 @@ const TestResults: React.FC<TestResultsProps> = ({ attempts, papers, lang, initi
             {attempts.length > 0 ? (
                 <div className="space-y-4">
                     {attempts.map(attempt => {
-                        const paper = attempt.paper;
-                        const isPractice = paper?.source === QuestionSource.Generated;
+                        const isPractice = attempt.totalMarks === -1;
 
                         return (
                             <div key={attempt.paperId + attempt.completedAt} className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
@@ -71,15 +69,17 @@ const TestResults: React.FC<TestResultsProps> = ({ attempts, papers, lang, initi
                                         <h3 className="font-bold text-slate-800">{attempt.paperTitle}</h3>
                                         <div className="text-sm text-slate-500 mt-1 flex items-center flex-wrap gap-x-3 gap-y-1">
                                             <span>{new Date(attempt.completedAt).toLocaleString()}</span>
-                                            {paper && <span>Class {paper.class}</span>}
-                                            {paper?.board && <span>{paper.board}</span>}
+                                            {attempt.paper && <span>Class {attempt.paper.class}</span>}
+                                            {attempt.paper?.board && <span>{attempt.paper.board}</span>}
                                             {isPractice && <span className="font-semibold text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full">Practice</span>}
                                         </div>
                                     </div>
                                     <div className="text-right flex-shrink-0 ml-4">
-                                         <p className="font-bold text-lg text-indigo-600">
-                                            {attempt.score}/{attempt.totalMarks}
-                                        </p>
+                                        {!isPractice && (
+                                            <p className="font-bold text-lg text-indigo-600">
+                                                {attempt.score}/{attempt.totalMarks}
+                                            </p>
+                                        )}
                                     </div>
                                 </div>
                                 <div className="flex justify-end mt-3">
@@ -119,7 +119,31 @@ interface DetailedResultViewProps {
 const DetailedResultView: React.FC<DetailedResultViewProps> = ({ attempt, paper, lang, onBack, onRetake, onGoToDashboard, onUpdateAttempt, userApiKey, userOpenApiKey }) => {
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisError, setAnalysisError] = useState<string | null>(null);
-    
+    const [answerFeedbacks, setAnswerFeedbacks] = useState<Record<string, { summary: string; coaching: string } | null>>({});
+    const [loadingFeedbackFor, setLoadingFeedbackFor] = useState<string | null>(null);
+
+    const isPractice = attempt.totalMarks === -1;
+
+    // Helper to determine if a question is objective (MCQ, T/F, etc.)
+    const isObjective = (question: Question) => {
+        const text = question.text || '';
+        const answer = question.answer || '';
+        // MCQ check
+        if (['A', 'B', 'C', 'D'].includes(answer.toUpperCase()) && text.includes('A)') && text.includes('B)')) {
+            return true;
+        }
+        // True/False check
+        if (answer.toLowerCase() === 'true' || answer.toLowerCase() === 'false') {
+            return true;
+        }
+        // Fill in the blanks check
+        if (text.includes('____')) {
+            return true;
+        }
+        // Could add more checks for Matching, Odd one out if needed
+        return false;
+    };
+
     const getStudentAnswer = (questionId: string) => {
         return attempt.studentAnswers.find(a => a.questionId === questionId)?.answer || '';
     };
@@ -144,6 +168,23 @@ const DetailedResultView: React.FC<DetailedResultViewProps> = ({ attempt, paper,
         }
     };
 
+    const handleGetAnswerFeedback = async (question: Question) => {
+        const studentAnswer = getStudentAnswer(question.id);
+        if (!studentAnswer || !question.answer) {
+            return;
+        }
+        setLoadingFeedbackFor(question.id);
+        try {
+            const result = await coachLongAnswerAI(question.text, question.answer, studentAnswer, lang, userApiKey, userOpenApiKey);
+            setAnswerFeedbacks(prev => ({ ...prev, [question.id]: { summary: result.analysisSummary, coaching: result.improvementCoaching } }));
+        } catch (error) {
+            console.error("Failed to get answer feedback:", error);
+            setAnswerFeedbacks(prev => ({ ...prev, [question.id]: { summary: "Error generating feedback.", coaching: "Please try again later." } }));
+        } finally {
+            setLoadingFeedbackFor(null);
+        }
+    };
+
     return (
         <div className="p-4 sm:p-6">
             <header className="mb-6">
@@ -162,10 +203,12 @@ const DetailedResultView: React.FC<DetailedResultViewProps> = ({ attempt, paper,
             </header>
 
             <div className="bg-white p-6 rounded-xl shadow-md border border-slate-200 mb-6 flex flex-col sm:flex-row justify-between items-center text-center sm:text-left">
-                <div className="mb-4 sm:mb-0">
-                    <p className="text-sm text-slate-500 uppercase font-semibold">{t('yourScore', lang)}</p>
-                    <p className="text-5xl font-bold text-indigo-600">{attempt.score}<span className="text-3xl text-slate-400">/{attempt.totalMarks}</span></p>
-                </div>
+                {!isPractice && (
+                    <div className="mb-4 sm:mb-0">
+                        <p className="text-sm text-slate-500 uppercase font-semibold">{t('yourScore', lang)}</p>
+                        <p className="text-5xl font-bold text-indigo-600">{attempt.score}<span className="text-3xl text-slate-400">/{attempt.totalMarks}</span></p>
+                    </div>
+                )}
                  <div className="flex gap-3">
                     <button onClick={onRetake} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm transition-all">{t('retakeTest', lang)}</button>
                     <button onClick={onGoToDashboard} className="px-5 py-2.5 bg-slate-200 text-slate-800 font-semibold rounded-lg hover:bg-slate-300 transition-all">{t('backToDashboard', lang)}</button>
@@ -179,13 +222,13 @@ const DetailedResultView: React.FC<DetailedResultViewProps> = ({ attempt, paper,
                         <div>
                             <h3 className="font-semibold text-green-700">{t('strengths', lang)}</h3>
                             <ul className="list-disc list-inside text-slate-600 space-y-1 mt-1">
-                                {attempt.analysis.strengths.map((s, i) => <li key={i}>{s}</li>)}
+                                {attempt.analysis.strengths?.map((s, i) => <li key={i}>{s}</li>)}
                             </ul>
                         </div>
                         <div>
                             <h3 className="font-semibold text-yellow-700">{t('weaknesses', lang)}</h3>
                             <ul className="list-disc list-inside text-slate-600 space-y-1 mt-1">
-                                {attempt.analysis.weaknesses.map((w, i) => <li key={i}>{w}</li>)}
+                                {attempt.analysis.weaknesses?.map((w, i) => <li key={i}>{w}</li>)}
                             </ul>
                         </div>
                         <div>
@@ -213,8 +256,19 @@ const DetailedResultView: React.FC<DetailedResultViewProps> = ({ attempt, paper,
                 {paper.questions.map((q, index) => {
                     const studentAnswer = getStudentAnswer(q.id);
                     const correct = isCorrect(q.id, q.answer);
-                    const borderColor = !q.answer ? 'border-slate-300' : correct ? 'border-green-400' : 'border-red-400';
-                    const bgColor = !q.answer ? 'bg-white' : correct ? 'bg-green-50' : 'bg-red-50';
+                    const feedback = answerFeedbacks[q.id];
+                    const objective = isObjective(q);
+                    
+                    const showCorrectnessIndicator = !isPractice || (isPractice && objective);
+
+                    let borderColor = 'border-slate-300';
+                    let bgColor = 'bg-white';
+                    
+                    if (showCorrectnessIndicator) {
+                        borderColor = !q.answer ? 'border-slate-300' : correct ? 'border-green-400' : 'border-red-400';
+                        bgColor = !q.answer ? 'bg-white' : correct ? 'bg-green-50' : 'bg-red-50';
+                    }
+
 
                     return (
                         <div key={q.id} className={`p-5 rounded-xl border-2 ${borderColor} ${bgColor}`}>
@@ -225,11 +279,37 @@ const DetailedResultView: React.FC<DetailedResultViewProps> = ({ attempt, paper,
                                     <span className="font-semibold text-sm text-slate-500">{t('yourAnswer', lang)}:</span>
                                     <span className="ml-2 text-slate-700">{studentAnswer || <span className="italic text-slate-400">{t('notAttempted', lang)}</span>}</span>
                                 </p>
-                                {q.answer && !correct && (
+                                
+                                {q.answer && ((showCorrectnessIndicator && !correct) || (isPractice && !objective)) && (
                                      <p className="mt-2">
                                         <span className="font-semibold text-sm text-green-700">{t('correctAnswer', lang)}</span>
                                         <span className="ml-2 text-green-800">{q.answer}</span>
                                     </p>
+                                )}
+                                
+                                {isPractice && studentAnswer && q.answer && (
+                                    <div className="mt-4">
+                                        {feedback ? (
+                                            <div className="space-y-3 bg-indigo-50/50 p-4 rounded-lg">
+                                                <div>
+                                                    <h4 className="font-semibold text-indigo-800">AI Analysis</h4>
+                                                    <p className="text-sm text-slate-700">{feedback.summary}</p>
+                                                </div>
+                                                <div>
+                                                    <h4 className="font-semibold text-indigo-800">Coaching Tips</h4>
+                                                    <p className="text-sm text-slate-700">{feedback.coaching}</p>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <button
+                                                onClick={() => handleGetAnswerFeedback(q)}
+                                                disabled={loadingFeedbackFor === q.id}
+                                                className="px-4 py-2 bg-indigo-100 text-indigo-700 font-semibold rounded-lg text-sm hover:bg-indigo-200 disabled:opacity-50"
+                                            >
+                                                {loadingFeedbackFor === q.id ? "Getting Feedback..." : "Get Answer Feedback"}
+                                            </button>
+                                        )}
+                                    </div>
                                 )}
                             </div>
                         </div>

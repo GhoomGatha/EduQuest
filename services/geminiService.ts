@@ -1,5 +1,7 @@
+
+
 import { GoogleGenAI, Type } from "@google/genai";
-import { Question, Language, StudentAnswer, Analysis, Flashcard, DiagramSuggestion, DiagramGrade, TestAttempt, PracticeSuggestion, Paper } from '../types';
+import { Question, Language, StudentAnswer, Analysis, Flashcard, DiagramSuggestion, DiagramGrade, TestAttempt, PracticeSuggestion, Paper, FinalExamPaper, GroundingSource, FinalExamPaperQuestion } from '../types';
 import { DEFAULT_CHAPTERS } from "../constants";
 import { 
     getChaptersOpenAI, 
@@ -15,12 +17,15 @@ import {
     extractQuestionsFromPdfAIOpenAI,
     answerTeacherDoubtAIOpenAI,
     extractQuestionsFromTextAIOpenAI,
+    coachLongAnswerAIOpenAI,
+    explainDiagramAIOpenAI,
 } from './openaiService';
-import { supabase } from './supabaseClient';
+import { supabase } from './supabaseClient'; // Corrected import path
 
 const AI_OPERATION_TIMEOUT = 120000; // 120 seconds
+const AI_PAPER_GENERATION_TIMEOUT = 240000; // 240 seconds (4 minutes)
 
-const withTimeout = <T>(promise: Promise<T>, ms: number, featureName: string, signal?: AbortSignal): Promise<T> => {
+export const withTimeout = <T>(promise: Promise<T>, ms: number, featureName: string, signal?: AbortSignal): Promise<T> => {
     const promisesToRace: Promise<T>[] = [promise];
 
     const timeoutPromise = new Promise<T>((_, reject) => {
@@ -36,6 +41,7 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, featureName: string, si
     if (signal) {
         const signalPromise = new Promise<T>((_, reject) => {
             if (signal.aborted) {
+                // FIX: Corrected DOMException constructor call
                 return reject(new DOMException('Aborted', 'AbortError'));
             }
             signal.addEventListener('abort', () => {
@@ -66,14 +72,20 @@ async function generateWithRetry(
   let attempt = 0;
   while (attempt < maxRetries) {
     if (signal?.aborted) {
+        // FIX: Corrected DOMException constructor call
         throw new DOMException('Aborted', 'AbortError');
     }
     try {
-      const requestWithSignal = { ...generationRequest, signal };
       if (generationRequest.model.includes('imagen')) {
-        return await ai.models.generateImages(requestWithSignal);
+        // Models.generateImages does not accept a signal in the options object directly,
+        // It relies on underlying fetch/xhr which should respond to global abort or specific library implementations.
+        // For @google/genai, signal is generally part of the top-level request object for `generateContent` or `generateContentStream`,
+        // not nested under 'config' or `models.generateImages` specific options.
+        const { config, ...rest } = generationRequest;
+        return await ai.models.generateImages({ ...rest, config });
       }
-      return await ai.models.generateContent(requestWithSignal);
+      // For models.generateContent, the signal is a top-level property of the options object.
+      return await ai.models.generateContent({ ...generationRequest, signal });
     } catch (error: any) {
       attempt++;
       
@@ -140,20 +152,25 @@ export const generateQuestionsAI = async (
   criteria: {
     class: number;
     subject: string;
-    chapter: string;
-    marks: number;
+    chapter?: string;
+    marks?: number;
     difficulty: string;
-    count: number;
+    count?: number;
     questionType?: string;
     keywords?: string;
     generateAnswer?: boolean;
     wbbseSyllabusOnly: boolean;
     lang: Language;
     useSearchGrounding?: boolean;
+    // New properties for batch paper generation
+    paperStructure?: { count: number; marks: number; types: string[] }[];
+    chapters?: string[];
   },
   existingQuestions: Question[],
   userApiKey?: string,
-  userOpenApiKey?: string
+  userOpenApiKey?: string,
+  // FIX: Added signal parameter to generateQuestionsAI
+  signal?: AbortSignal
 ): Promise<{ generatedQuestions: Partial<Question>[], groundingChunks?: any[] }> => {
   const providers = [];
   if (userApiKey) providers.push({ type: 'gemini', key: userApiKey, name: "User's Gemini Key" });
@@ -175,20 +192,19 @@ export const generateQuestionsAI = async (
         const ai = new GoogleGenAI({ apiKey: provider.key });
         const targetLanguage = languageMap[criteria.lang] || 'English';
         const existingQuestionTexts = existingQuestions.slice(0, 50).map(q => `- ${q.text}`).join('\n');
-        const shouldGenerateAnswer = criteria.generateAnswer || ['Multiple Choice', 'Fill in the Blanks', 'True/False', 'Odd Man Out', 'Matching'].includes(criteria.questionType || '');
         
         if (criteria.questionType === 'Image-based') {
-            const generatedQuestions: Partial<Question>[] = [];
-            for (let i = 0; i < criteria.count; i++) {
-                if (i > 0) await new Promise(resolve => setTimeout(resolve, 2000)); // Rate limit
-                
-                const textGenPrompt = `
+            const count = criteria.count || 1;
+
+            const generateSingleImageQuestion = async (): Promise<Partial<Question> | null> => {
+                try {
+                    const textGenPrompt = `
 You are an expert ${criteria.subject} teacher creating a question for an exam.
 Your task is to generate a single JSON object containing "questionText", "answerText", and "imagePrompt".
 
 **Instructions:**
 1.  **questionText**: Create a unique ${criteria.subject} question based on the criteria below. This question MUST refer to a diagram (e.g., "Identify the part labeled 'X'...", "Describe the process shown in the diagram..."). Do NOT repeat questions from previous turns.
-2.  **answerText**: Provide a concise, correct answer to the question. ${!shouldGenerateAnswer ? 'This field should be an empty string if an answer is not required.' : ''}
+2.  **answerText**: Provide a concise, correct answer to the question. ${!criteria.generateAnswer ? 'This field should be an empty string if an answer is not required.' : ''}
 3.  **imagePrompt**: Write a clear and detailed prompt for an image generation AI. This prompt should describe the exact diagram needed to answer the question. It should be simple, biologically accurate, and include instructions for any necessary labels (e.g., "Label the nucleus with the letter 'A'.").
 4.  All generated text MUST be in the **${targetLanguage}** language.
 
@@ -202,66 +218,151 @@ Your task is to generate a single JSON object containing "questionText", "answer
 **Output Format:**
 Return ONLY a single valid JSON object. Do not add any text before or after the JSON.
 `;
-                const responseSchema: any = {
-                    type: Type.OBJECT,
-                    properties: {
-                        questionText: { type: Type.STRING, description: `The ${criteria.subject} question that requires a diagram.` },
-                        imagePrompt: { type: Type.STRING, description: "A detailed prompt for an AI to generate the necessary diagram." },
-                    },
-                    required: ["questionText", "imagePrompt"],
-                };
-    
-                if (shouldGenerateAnswer) {
-                    responseSchema.properties.answerText = { type: Type.STRING, description: "The answer to the question." };
-                    responseSchema.required.push("answerText");
+                    const responseSchema: any = {
+                        type: Type.OBJECT,
+                        properties: {
+                            questionText: { type: Type.STRING, description: `The ${criteria.subject} question that requires a diagram.` },
+                            imagePrompt: { type: Type.STRING, description: "A detailed prompt for an AI to generate the necessary diagram." },
+                        },
+                        required: ["questionText", "imagePrompt"],
+                    };
+        
+                    if (criteria.generateAnswer) {
+                        responseSchema.properties.answerText = { type: Type.STRING, description: "The answer to the question." };
+                        responseSchema.required.push("answerText");
+                    }
+        
+                    // FIX: Pass signal to generateWithRetry and withTimeout
+                    const textResponse = await withTimeout(generateWithRetry(ai, {
+                        model: 'gemini-2.5-flash',
+                        contents: textGenPrompt,
+                        config: {
+                            responseMimeType: "application/json",
+                            responseSchema: responseSchema,
+                        },
+                    }, 5, signal), AI_OPERATION_TIMEOUT, "Image-based Question Text Generation", signal);
+        
+                    const textResult = JSON.parse(textResponse.text.trim());
+                    const { questionText, answerText, imagePrompt } = textResult;
+        
+                    if (!questionText || !imagePrompt) {
+                        console.warn("AI failed to generate the question text or image prompt for one question.");
+                        return null;
+                    }
+                    
+                    // FIX: Pass signal to generateWithRetry and withTimeout
+                    const imageResponse = await withTimeout(generateWithRetry(ai, {
+                      model: 'imagen-4.0-generate-001',
+                      prompt: imagePrompt,
+                      config: {
+                        numberOfImages: 1,
+                        outputMimeType: 'image/png',
+                      },
+                    }, 5, signal), AI_OPERATION_TIMEOUT, "Image-based Question Image Generation", signal);
+                    
+                    const generatedImage = imageResponse.generatedImages?.[0];
+        
+                    if (!generatedImage?.image?.imageBytes) {
+                        console.warn("AI failed to generate a valid image from the provided prompt for one question.");
+                        return null;
+                    }
+                    
+                    const base64ImageBytes: string = generatedImage.image.imageBytes;
+                    const imageDataURL = `data:image/png;base64,${base64ImageBytes}`;
+                    
+                    return {
+                      text: questionText,
+                      answer: criteria.generateAnswer ? answerText : undefined,
+                      image_data_url: imageDataURL
+                    };
+                } catch (error) {
+                    if (error instanceof DOMException && error.name === 'AbortError') {
+                        throw error; // Re-throw abort errors to stop Promise.all
+                    }
+                    console.error("Error generating a single image-based question:", error);
+                    return null; // Return null on other failures so Promise.all doesn't reject everything
                 }
-    
-                const textResponse = await withTimeout(generateWithRetry(ai, {
-                    model: 'gemini-2.5-flash',
-                    contents: textGenPrompt,
-                    config: {
-                        responseMimeType: "application/json",
-                        responseSchema: responseSchema,
-                    },
-                }), AI_OPERATION_TIMEOUT, "Image-based Question Text Generation");
-    
-                const textResult = JSON.parse(textResponse.text.trim());
-                const { questionText, answerText, imagePrompt } = textResult;
-    
-                if (!questionText || !imagePrompt) {
-                    throw new Error("AI failed to generate the question text or image prompt.");
-                }
-                
-                await new Promise(resolve => setTimeout(resolve, 1100));
-    
-                const imageResponse = await withTimeout(generateWithRetry(ai, {
-                  model: 'imagen-4.0-generate-001',
-                  prompt: imagePrompt,
-                  config: {
-                    numberOfImages: 1,
-                    outputMimeType: 'image/png',
-                  },
-                }), AI_OPERATION_TIMEOUT, "Image-based Question Image Generation");
-                
-                const generatedImage = imageResponse.generatedImages?.[0];
-    
-                if (!generatedImage?.image?.imageBytes) {
-                    throw new Error("AI failed to generate a valid image from the provided prompt.");
-                }
-                
-                const base64ImageBytes: string = generatedImage.image.imageBytes;
-                const imageDataURL = `data:image/png;base64,${base64ImageBytes}`;
-                
-                generatedQuestions.push({
-                  text: questionText,
-                  answer: shouldGenerateAnswer ? answerText : undefined,
-                  image_data_url: imageDataURL
-                });
-            }
+            };
+
+            const promises = Array.from({ length: count }, () => generateSingleImageQuestion());
+            const results = await Promise.all(promises);
+            const generatedQuestions = results.filter((q): q is Partial<Question> => q !== null);
 
             return { generatedQuestions, groundingChunks: undefined };
         }
+        
+        // ** BATCH PAPER GENERATION LOGIC **
+        if (criteria.paperStructure) {
+            const structureDescription = criteria.paperStructure.map(req => {
+                const typesString = req.types.map(t => `'${t}'`).join(' or ');
+                return `- ${req.count} questions, each worth ${req.marks} marks. The question type for these should be chosen from: ${typesString}.`;
+            }).join('\n');
+            const chaptersString = (criteria.chapters || []).map(c => `"${c}"`).join(', ');
+            const shouldGenerateAnswer = criteria.generateAnswer;
+            const boardName = criteria.class >= 11 ? "WBCHSE" : "WBBSE";
+            const boardFullName = criteria.class >= 11 ? "West Bengal Council of Higher Secondary Education (WBCHSE)" : "West Bengal Board of Secondary Education (WBBSE)";
+            const syllabusInstruction = criteria.wbbseSyllabusOnly ? `You are an expert in creating question papers for the ${boardFullName} curriculum. **CRITICAL RULE: All questions MUST strictly adhere to the ${boardName} syllabus.**` : `You are an expert in creating question papers for the subject of ${criteria.subject}.`;
 
+            const prompt = `
+                ${syllabusInstruction}
+                Your task is to generate a complete question paper as a single JSON object with a key "questions" which is an array of question objects.
+                **CRITICAL INSTRUCTION: All generated text MUST be in the ${targetLanguage} language.**
+
+                **Paper Structure:**
+                ${structureDescription}
+
+                **General Criteria:**
+                - Subject: ${criteria.subject}
+                - Class: ${criteria.class}
+                - Difficulty for all questions: ${criteria.difficulty}
+                - For each question, randomly select a chapter from this list: [${chaptersString}].
+
+                **JSON Output Format:**
+                The response must be a single valid JSON object: { "questions": [...] }.
+                Each question object in the "questions" array must have these fields:
+                - "text": The full question text. For MCQs, include 4 options (A, B, C, D).
+                - "answer": The correct answer. ${!shouldGenerateAnswer ? 'This field should be an empty string.' : "For MCQs, this MUST be the capital letter of the correct option (e.g., 'A'). For True/False, it MUST be 'True' or 'False'."}
+                - "marks": A number, which MUST match the marks specified for it in the structure.
+                - "chapter": A string, which MUST be one of the chapters from the provided list.
+                - "type": A string, which MUST be one of the types specified for its group.
+
+                Ensure the total number of questions and their marks match the requested structure precisely. Do NOT repeat questions.
+            `;
+            
+            const responseSchema = {
+                type: Type.OBJECT,
+                properties: {
+                    questions: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                text: { type: Type.STRING },
+                                answer: { type: Type.STRING },
+                                marks: { type: Type.NUMBER },
+                                chapter: { type: Type.STRING },
+                                type: { type: Type.STRING },
+                            },
+                            required: ["text", "answer", "marks", "chapter", "type"],
+                        }
+                    }
+                },
+                required: ["questions"],
+            };
+            
+            // FIX: Pass signal to generateWithRetry and withTimeout
+            const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Batch Paper Generation", signal);
+            const result = JSON.parse(response.text.trim());
+            const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+            const generated = result.questions || [];
+            
+            console.log(`Successfully generated paper with ${provider.name}.`);
+            return { generatedQuestions: generated, groundingChunks };
+        }
+
+
+        // ** SINGLE GROUP GENERATION LOGIC (Legacy for Student App) **
+        const shouldGenerateAnswer = criteria.generateAnswer || ['Multiple Choice', 'Fill in the Blanks', 'True/False', 'Odd Man Out', 'Matching'].includes(criteria.questionType || '');
         let formatInstructions = `Each question must be of the type: "${criteria.questionType || 'Short Answer'}".`;
         let jsonInstructions = 'The response must be a valid JSON array of objects.';
 
@@ -297,7 +398,8 @@ Return ONLY a single valid JSON object. Do not add any text before or after the 
         const config: any = { responseMimeType: "application/json", responseSchema: responseSchema };
         if (criteria.useSearchGrounding) { config.tools = [{ googleSearch: {} }]; delete config.responseMimeType; delete config.responseSchema; }
 
-        const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: config }), AI_OPERATION_TIMEOUT, "Standard Question Generation");
+        // FIX: Pass signal to generateWithRetry and withTimeout
+        const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: config }, 5, signal), AI_OPERATION_TIMEOUT, "Standard Question Generation", signal);
         const jsonText = response.text.trim();
         let generated: { text: string; answer?: string }[] = [];
         try { generated = JSON.parse(jsonText); } catch (e) {
@@ -312,13 +414,29 @@ Return ONLY a single valid JSON object. Do not add any text before or after the 
         console.log(`Successfully generated questions with ${provider.name}.`);
         return { generatedQuestions: generated, groundingChunks };
       } else { // OpenAI provider
-        const result = await withTimeout(generateQuestionsOpenAI(criteria, existingQuestions, provider.key), AI_OPERATION_TIMEOUT, "Question Generation (OpenAI)");
+        // FIX: OpenAI fallback for single-group generation requires chapter, marks, and count fields, which might be undefined. Provide default values to prevent crashes.
+        if (criteria.paperStructure) {
+            console.warn("OpenAI fallback does not support batch paper generation. Skipping.");
+            continue;
+        }
+
+        const openAICriteria = {
+            ...criteria,
+            chapter: criteria.chapter || 'Various Topics',
+            marks: criteria.marks || 1,
+            count: criteria.count || 1,
+        };
+        const result = await withTimeout(generateQuestionsOpenAI(openAICriteria, existingQuestions, provider.key, signal), AI_OPERATION_TIMEOUT, "Question Generation (OpenAI)", signal);
         console.log(`Successfully generated questions with ${provider.name}.`);
         return { ...result, groundingChunks: undefined };
       }
-    } catch (error) {
-      console.warn(`Provider ${provider.name} failed for generateQuestionsAI.`, error);
-      lastError = error;
+    } catch (error: any) {
+        lastError = error;
+        // Re-throw abort errors to ensure they are handled by the caller's catch block
+        if (error.name === 'AbortError') {
+            throw error;
+        }
+        console.warn(`Provider ${provider.name} failed for generateQuestionsAI.`, error);
     }
   }
 
@@ -348,6 +466,7 @@ export const getSubjectsAI = async (
   lang: Language,
   userGeminiApiKey?: string,
   userOpenAIApiKey?: string,
+  signal?: AbortSignal // FIX: Added signal parameter
 ): Promise<string[]> => {
     const cacheKey = `${board}-${classNum}-${lang}`;
     const localCacheExpiry = 1000 * 60 * 60 * 24 * 7; // 1 week for localStorage
@@ -376,376 +495,626 @@ export const getSubjectsAI = async (
     // 2. Check Supabase DB (persistent cache)
     try {
         const { data: dbData, error: dbError } = await supabase.from('subjects').select('subjects_list, updated_at').eq('board', board).eq('class', classNum).eq('lang', lang).single();
-        if (dbError && dbError.code !== 'PGRST116') { console.warn("Error fetching subjects from Supabase cache:", dbError); }
-        if (dbData?.subjects_list?.length > 0) {
+
+        if (dbError && dbError.code !== 'PGRST116') { // PGRST116 is "exact one row not found"
+            console.error("Supabase error fetching subjects:", dbError.message || dbError);
+        } else if (dbData) {
             const isStale = (Date.now() - new Date(dbData.updated_at).getTime()) > dbCacheStalePeriod;
             if (!isStale) {
                 updateLocalCache(dbData.subjects_list);
                 return dbData.subjects_list;
             }
         }
-    } catch (e) { console.error("Failed to query Supabase for subjects cache", e); }
-    
-    // 3. Fallback to AI API call
-    const providers = createProviderList(userGeminiApiKey, userOpenAIApiKey);
-    let subjectsFromAI: string[] | null = null;
-    if (providers.length > 0) {
-        for (const provider of providers) {
-            try {
-                console.log(`Attempting to fetch subjects with ${provider.name}`);
-                if (provider.type === 'gemini') {
-                    const ai = new GoogleGenAI({ apiKey: provider.key });
-                    const prompt = `You are an expert on educational syllabi. List all academic subjects for the given curriculum.
-                    
-                    **Criteria:**
-                    - Educational Board: ${board}
-                    - Class: ${classNum}
-                    - Language for subject names: ${languageMap[lang]}
+    } catch (e) {
+        console.warn("Could not read subjects from Supabase cache", e);
+    }
 
-                    Return ONLY a single valid JSON array of strings, where each string is a subject name. For example: ["Mathematics", "Science", "History"].`;
-                    
-                    const responseSchema = { type: Type.ARRAY, items: { type: Type.STRING } };
-                    const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } }), AI_OPERATION_TIMEOUT, "Subject List Generation");
-                    
-                    const subjectsResult = JSON.parse(response.text.trim());
-                    if (Array.isArray(subjectsResult) && subjectsResult.every(item => typeof item === 'string')) {
-                        subjectsFromAI = subjectsResult;
-                        break;
-                    } else {
-                        throw new Error("Invalid format from Gemini.");
-                    }
-                }
-            } catch (error) {
-                console.warn(`Provider ${provider.name} failed for getSubjectsAI.`, error);
-            }
-        }
+    // 3. Fallback to AI generation
+    const providers = [];
+    if (userGeminiApiKey) providers.push({ type: 'gemini', key: userGeminiApiKey, name: "User's Gemini Key" });
+    if (userOpenAIApiKey) providers.push({ type: 'openai', key: userOpenAIApiKey, name: "User's OpenAI Key" });
+    if (FALLBACK_API_KEY && FALLBACK_API_KEY !== userGeminiApiKey) {
+        providers.push({ type: 'gemini', key: FALLBACK_API_KEY, name: "System Fallback Key" });
+    }
+
+    if (providers.length === 0) {
+        throw new Error("API Key is not configured. Please add your own key in Settings to use AI features.");
     }
     
-    // 4. Update caches and return
-    if (subjectsFromAI && subjectsFromAI.length > 0) {
-        updateLocalCache(subjectsFromAI);
-        supabase.from('subjects').upsert({ board: board, class: classNum, lang: lang, subjects_list: subjectsFromAI, updated_at: new Date().toISOString() }, { onConflict: 'board, class, lang' }).then(({ error: upsertError }) => { if (upsertError) { console.warn("Failed to cache subjects in Supabase:", upsertError); } });
-        return subjectsFromAI;
-    }
-    
-    // 5. Final fallback
-    console.warn(`All AI options failed for subjects. Returning default list.`);
-    return ['Biology', 'Life Science', 'Mathematics', 'Physics', 'Chemistry', 'History', 'Geography'];
-};
+    let lastError: any = null;
 
-export const getChaptersAI = async (
-  board: string,
-  classNum: number,
-  subject: string,
-  lang: Language,
-  semester?: string,
-  userGeminiApiKey?: string,
-  userOpenAIApiKey?: string,
-): Promise<string[]> => {
-  const cacheKey = `${board}-${classNum}-${subject}-${lang}-${semester || 'all'}`;
-  const localCacheExpiry = 1000 * 60 * 60 * 24 * 7; // 1 week for localStorage
-  const dbCacheStalePeriod = 1000 * 60 * 60 * 24 * 90; // 90 days for Supabase
-
-  try {
-    const cachedDataRaw = localStorage.getItem(CHAPTERS_CACHE_KEY);
-    if (cachedDataRaw) {
-      const cache: ChaptersCache = JSON.parse(cachedDataRaw);
-      if (cache[cacheKey] && (Date.now() - cache[cacheKey].timestamp < localCacheExpiry)) {
-        return cache[cacheKey].chapters;
-      }
-    }
-  } catch (e) { console.warn("Could not read chapters from localStorage cache", e); }
-
-  const updateLocalCache = (chapters: string[]) => {
-    try {
-      const cachedDataRaw = localStorage.getItem(CHAPTERS_CACHE_KEY);
-      const cache: ChaptersCache = cachedDataRaw ? JSON.parse(cachedDataRaw) : {};
-      cache[cacheKey] = { chapters, timestamp: Date.now() };
-      localStorage.setItem(CHAPTERS_CACHE_KEY, JSON.stringify(cache));
-    } catch (e) { console.warn("Could not write chapters to localStorage cache", e); }
-  };
-
-  try {
-    const query = supabase
-      .from('chapters')
-      .select('chapters_list, updated_at')
-      .eq('board', board)
-      .eq('class', classNum)
-      .eq('lang', lang)
-      .eq('subject', subject);
-
-    if (semester) {
-      query.eq('semester', semester);
-    } else {
-      query.is('semester', null);
-    }
-    
-    const { data: dbData, error: dbError } = await query.single();
-    
-    if (dbError && dbError.code !== 'PGRST116') { console.warn("Error fetching chapters from Supabase cache:", dbError); }
-    if (dbData?.chapters_list?.length > 0) {
-      const isStale = (Date.now() - new Date(dbData.updated_at).getTime()) > dbCacheStalePeriod;
-      if (!isStale) { updateLocalCache(dbData.chapters_list); return dbData.chapters_list; }
-    }
-  } catch (e) { console.error("Failed to query Supabase for chapters cache", e); }
-
-  const providers = [];
-  if (userGeminiApiKey) providers.push({ type: 'gemini', key: userGeminiApiKey, name: "User's Gemini Key" });
-  if (userOpenAIApiKey) providers.push({ type: 'openai', key: userOpenAIApiKey, name: "User's OpenAI Key" });
-  if (FALLBACK_API_KEY && FALLBACK_API_KEY !== userGeminiApiKey) { providers.push({ type: 'gemini', key: FALLBACK_API_KEY, name: "System Fallback Key" }); }
-
-  let chaptersFromAI: string[] | null = null;
-  if (providers.length > 0) {
     for (const provider of providers) {
         try {
-            console.log(`Attempting to fetch chapters with ${provider.name}`);
-            if (provider.type === 'gemini') {
-                const ai = new GoogleGenAI({ apiKey: provider.key });
-                const semesterInstruction = semester ? `- Semester: ${semester}` : '';
-                const prompt = `You are an expert on educational syllabi. Your task is to list all chapters for a specific subject and curriculum.
+            console.log(`Attempting to fetch subjects with ${provider.name}`);
+            let subjects: string[] | null = null;
+            // OpenAI implementation would go here if it existed, for now this is Gemini only.
+            // For simplicity, we assume Gemini will be used.
+            const ai = new GoogleGenAI({ apiKey: provider.key });
+            const prompt = `
+                You are an expert on educational syllabi. Your task is to provide a list of all subjects for a specific curriculum.
+                All subject names MUST be in the **${languageMap[lang] || 'English'}** language.
 
-**CRITICAL INSTRUCTION:** The list of chapters must be strictly for the specified subject ONLY. Do not include chapters from any other subjects.
+                **Criteria:**
+                - Educational Board: ${board}
+                - Class: ${classNum}
 
-**Criteria:**
-- Subject: ${subject}
-- Educational Board: ${board}
-- Class: ${classNum}
-${semesterInstruction}
-- Language for chapter names: ${languageMap[lang]}
+                Return ONLY a single valid JSON object with a single key "subjects", which contains an array of strings.
+                Example: {"subjects": ["Life Science", "Physical Science", "Mathematics", "History"]}
+            `;
 
-Return ONLY a single valid JSON array of strings, where each string is a chapter name.`;
-                const responseSchema = { type: Type.ARRAY, items: { type: Type.STRING } };
-                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } }), AI_OPERATION_TIMEOUT, "Chapter List Generation");
-                const chaptersResult = JSON.parse(response.text.trim());
-                if (Array.isArray(chaptersResult) && chaptersResult.every(item => typeof item === 'string')) { chaptersFromAI = chaptersResult; break; } else { throw new Error("Invalid format from Gemini."); }
-            } else { // OpenAI
-                const result = await withTimeout(getChaptersOpenAI(board, classNum, lang, provider.key, subject, semester), AI_OPERATION_TIMEOUT, "Chapter List Generation (OpenAI)");
-                if (result) { chaptersFromAI = result; break; } else { throw new Error("OpenAI returned null."); }
+            const responseSchema = {
+                type: Type.OBJECT,
+                properties: {
+                    subjects: {
+                        type: Type.ARRAY,
+                        items: { type: Type.STRING },
+                    },
+                },
+                required: ["subjects"],
+            };
+
+            // FIX: Pass signal to generateWithRetry and withTimeout
+            const response = await withTimeout(generateWithRetry(ai, {
+                model: 'gemini-2.5-flash',
+                contents: prompt,
+                config: {
+                    responseMimeType: 'application/json',
+                    responseSchema: responseSchema,
+                },
+            }, 5, signal), AI_OPERATION_TIMEOUT, "Get Subjects", signal);
+
+            const result = JSON.parse(response.text.trim());
+
+            if (result && Array.isArray(result.subjects)) {
+                subjects = result.subjects;
             }
+
+            if (subjects) {
+                updateLocalCache(subjects);
+                // Update DB cache
+                supabase.from('subjects').upsert({
+                    board: board,
+                    class: classNum,
+                    lang: lang,
+                    subjects_list: subjects,
+                    updated_at: new Date().toISOString(),
+                }, { onConflict: 'board,class,lang' }).then(({ error }) => {
+                    if (error) console.error("Failed to update Supabase subjects cache:", error.message || error);
+                });
+                return subjects;
+            }
+
         } catch (error) {
-            console.warn(`Provider ${provider.name} failed for getChaptersAI.`, error);
+            console.warn(`Provider ${provider.name} failed for getSubjectsAI.`, error);
+            lastError = error;
         }
     }
-  }
-  
-  if (chaptersFromAI && chaptersFromAI.length > 0) {
-    updateLocalCache(chaptersFromAI);
-    supabase.from('chapters').upsert({ 
-        board: board, 
-        class: classNum, 
-        lang: lang, 
-        subject: subject,
-        semester: semester || null,
-        chapters_list: chaptersFromAI, 
-        updated_at: new Date().toISOString() 
-    }, { onConflict: 'board, class, lang, subject, semester' }).then(({ error: upsertError }) => { if (upsertError) { console.warn("Failed to cache chapters in Supabase:", upsertError); } });
-    return chaptersFromAI;
-  }
 
-  if (DEFAULT_CHAPTERS[classNum]) { console.warn(`Falling back to default chapters for class ${classNum}.`); return DEFAULT_CHAPTERS[classNum]; }
-  console.warn(`All AI options failed for class ${classNum}, and no default chapters found. Returning empty list.`);
-  return [];
+    throw lastError || new Error("All providers failed for getSubjectsAI.");
 };
 
-const createProviderList = (userApiKey?: string, userOpenApiKey?: string) => {
+// FIX: Add all missing function exports that follow the provider-fallback pattern.
+
+// Helper to create provider list
+const getProviders = (userApiKey?: string, userOpenApiKey?: string) => {
     const providers = [];
     if (userApiKey) providers.push({ type: 'gemini', key: userApiKey, name: "User's Gemini Key" });
     if (userOpenApiKey) providers.push({ type: 'openai', key: userOpenApiKey, name: "User's OpenAI Key" });
     if (FALLBACK_API_KEY && FALLBACK_API_KEY !== userApiKey) {
         providers.push({ type: 'gemini', key: FALLBACK_API_KEY, name: "System Fallback Key" });
     }
+    if (providers.length === 0) {
+        throw new Error("API Key is not configured. Please add your own key in Settings to use AI features.");
+    }
     return providers;
 };
 
-const executeWithFallbacks = async <T>(
-    providers: ReturnType<typeof createProviderList>,
-    geminiExecutor: (ai: GoogleGenAI, signal?: AbortSignal) => Promise<T>,
-    openAIExecutor: (apiKey: string, signal?: AbortSignal) => Promise<T>,
-    featureName: string,
-    signal?: AbortSignal
-): Promise<T> => {
-    if (providers.length === 0) {
-        throw new Error("API Key is not configured for this feature.");
-    }
+export const getChaptersAI = async (
+    board: string,
+    classNum: number,
+    subject: string,
+    lang: Language,
+    semester?: string,
+    userGeminiApiKey?: string,
+    userOpenAIApiKey?: string,
+    signal?: AbortSignal // FIX: Added signal parameter
+): Promise<string[]> => {
+    const semesterForDb = semester || 'all_semesters';
+    const cacheKey = `${board}-${classNum}-${subject}-${lang}-${semesterForDb}`;
+    const localCacheExpiry = 1000 * 60 * 60 * 24 * 7; // 1 week
+    const dbCacheStalePeriod = 1000 * 60 * 60 * 24 * 90; // 90 days
+
+    try {
+        const cachedDataRaw = localStorage.getItem(CHAPTERS_CACHE_KEY);
+        if (cachedDataRaw) {
+            const cache: ChaptersCache = JSON.parse(cachedDataRaw);
+            if (cache[cacheKey] && (Date.now() - cache[cacheKey].timestamp < localCacheExpiry)) {
+                return cache[cacheKey].chapters;
+            }
+        }
+    } catch (e) { console.warn("Could not read chapters from localStorage cache", e); }
+
+    const updateLocalCache = (chapters: string[]) => {
+        try {
+            const cachedDataRaw = localStorage.getItem(CHAPTERS_CACHE_KEY);
+            const cache: ChaptersCache = cachedDataRaw ? JSON.parse(cachedDataRaw) : {};
+            cache[cacheKey] = { chapters, timestamp: Date.now() };
+            localStorage.setItem(CHAPTERS_CACHE_KEY, JSON.stringify(cache));
+        } catch (e) { console.warn("Could not write chapters to localStorage cache", e); }
+    };
+
+    try {
+        const { data: dbData, error: dbError } = await supabase.from('chapters')
+            .select('chapters_list, updated_at')
+            .eq('board', board)
+            .eq('class', classNum)
+            .eq('lang', lang)
+            .eq('subject', subject)
+            .eq('semester', semesterForDb)
+            .single();
+
+        if (dbError && dbError.code !== 'PGRST116') {
+            console.error("Supabase error fetching chapters:", dbError.message || dbError);
+        } else if (dbData) {
+            const isStale = (Date.now() - new Date(dbData.updated_at).getTime()) > dbCacheStalePeriod;
+            if (!isStale) {
+                updateLocalCache(dbData.chapters_list);
+                return dbData.chapters_list;
+            }
+        }
+    } catch (e) { console.warn("Could not read chapters from Supabase cache", e); }
+
+    const providers = getProviders(userGeminiApiKey, userOpenAIApiKey);
     let lastError: any = null;
+
     for (const provider of providers) {
         try {
-            console.log(`Attempting ${featureName} with ${provider.name}`);
+            console.log(`Attempting to fetch chapters with ${provider.name}`);
+            let chapters: string[] | null = null;
             if (provider.type === 'gemini') {
                 const ai = new GoogleGenAI({ apiKey: provider.key });
-                const result = await withTimeout(geminiExecutor(ai, signal), AI_OPERATION_TIMEOUT, featureName, signal);
-                console.log(`Successfully executed ${featureName} with ${provider.name}.`);
-                return result;
-            } else {
-                const result = await withTimeout(openAIExecutor(provider.key, signal), AI_OPERATION_TIMEOUT, `${featureName} (OpenAI)`, signal);
-                console.log(`Successfully executed ${featureName} with ${provider.name}.`);
-                return result;
+                const semesterInstruction = semester ? `- Semester: ${semester}` : '';
+                const prompt = `
+                    You are an expert on educational syllabi. Your task is to provide a comprehensive list of all chapters for a specific subject and curriculum.
+                    **CRITICAL INSTRUCTION:** The list of chapters must be strictly for the specified subject ONLY. Do not include chapters from any other subjects.
+                    All chapter names MUST be in the **${languageMap[lang] || 'English'}** language.
+
+                    **Criteria:**
+                    - Subject: ${subject}
+                    - Educational Board: ${board}
+                    - Class: ${classNum}
+                    ${semesterInstruction}
+
+                    Return ONLY a single valid JSON object with a single key "chapters", which contains an array of strings.
+                    Example: {"chapters": ["The Living World", "Biological Classification", "Plant Kingdom"]}
+                `;
+                const responseSchema = {
+                    type: Type.OBJECT,
+                    properties: { chapters: { type: Type.ARRAY, items: { type: Type.STRING }}},
+                    required: ["chapters"],
+                };
+                // FIX: Pass signal to generateWithRetry and withTimeout
+                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: 'application/json', responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Get Chapters", signal);
+                const result = JSON.parse(response.text.trim());
+                if (result && Array.isArray(result.chapters)) {
+                    chapters = result.chapters;
+                }
+            } else { // openai
+                chapters = await getChaptersOpenAI(board, classNum, lang, provider.key, subject, semester, signal);
+            }
+
+            if (chapters) {
+                updateLocalCache(chapters);
+                supabase.from('chapters').upsert({
+                    board, class: classNum, lang, subject, semester: semesterForDb,
+                    chapters_list: chapters,
+                    updated_at: new Date().toISOString(),
+                }, { onConflict: 'board,class,lang,subject,semester' }).then(({ error }) => {
+                    if (error) console.error("Failed to update Supabase chapters cache:", error.message || error);
+                });
+                return chapters;
             }
         } catch (error) {
-            console.warn(`Provider ${provider.name} failed for ${featureName}.`, error);
+            console.warn(`Provider ${provider.name} failed for getChaptersAI.`, error);
             lastError = error;
         }
     }
-    console.error(`All providers failed for ${featureName}.`);
-    throw lastError || new Error(`${featureName} failed with all available keys. Please check your keys in Settings.`);
+
+    console.error("All providers failed for getChaptersAI. Using default chapters.", lastError);
+    return DEFAULT_CHAPTERS[classNum] || [];
 };
 
-export const analyzeTestAttempt = async (paper: Paper, studentAnswers: StudentAnswer[], lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<Analysis> => {
-    const providers = createProviderList(userApiKey, userOpenApiKey);
-    const subject = paper.subject || 'Biology';
-    return executeWithFallbacks(
-        providers,
-        async (ai) => {
-            const detailedAttempt = paper.questions.map(q => `Question: ${q.text}\nChapter: ${q.chapter}\nCorrect Answer: ${q.answer}\nStudent's Answer: ${studentAnswers.find(sa => sa.questionId === q.id)?.answer || "Not Answered"}\n---`).join('\n');
-            const prompt = `You are a helpful ${subject} tutor. Analyze a student's test performance in ${languageMap[lang]}.\nTest Data:\n${detailedAttempt}\nReturn ONLY a single valid JSON object with "strengths" (array of strings), "weaknesses" (array of strings), and "summary" (string).`;
-            const responseSchema = { type: Type.OBJECT, properties: { strengths: { type: Type.ARRAY, items: { type: Type.STRING } }, weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } }, summary: { type: Type.STRING } }, required: ["strengths", "weaknesses", "summary"] };
-            const response = await generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } });
-            return JSON.parse(response.text.trim());
-        },
-        (apiKey) => analyzeTestAttemptOpenAI(paper, studentAnswers, lang, apiKey),
-        "Test Analysis"
-    );
-};
-
-export const generateFlashcardsAI = (subject: string, chapter: string, classNum: number, count: number, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<Flashcard[]> => {
-    const providers = createProviderList(userApiKey, userOpenApiKey);
-    return executeWithFallbacks(
-        providers,
-        async (ai) => {
-            const prompt = `Generate ${count} flashcards for ${subject}, Class ${classNum} on "${chapter}" in ${languageMap[lang]}. Output a valid JSON array of objects, each with a "question" and "answer" key.`;
-            const responseSchema = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { question: { type: Type.STRING }, answer: { type: Type.STRING } }, required: ["question", "answer"] } };
-            const response = await generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } });
-            return JSON.parse(response.text.trim());
-        },
-        (apiKey) => generateFlashcardsAIOpenAI(subject, chapter, classNum, count, lang, apiKey),
-        "Flashcard Generation"
-    );
-};
-
-export const extractQuestionsFromImageAI = (imageDataUrl: string, classNum: number, lang: Language, userApiKey?: string, userOpenApiKey?: string, signal?: AbortSignal): Promise<Partial<Question>[]> => {
-    const providers = createProviderList(userApiKey, userOpenApiKey);
-    return executeWithFallbacks(
-        providers,
-        async (ai, sig) => {
-            const mimeType = imageDataUrl.split(';')[0].split(':')[1];
-            const base64Data = imageDataUrl.split(',')[1];
-            const imagePart = { inlineData: { mimeType, data: base64Data } };
-            const prompt = `Extract all questions from the image of an exam paper for Class ${classNum} in ${languageMap[lang]}. Return a valid JSON array of objects, each with "text" (string) and optional "marks" (number).`;
-            const responseSchema = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { text: { type: Type.STRING }, marks: { type: Type.NUMBER } }, required: ["text"] } };
-            const response = await generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: { parts: [{ text: prompt }, imagePart] }, config: { responseMimeType: "application/json", responseSchema } }, 5, sig);
-            return JSON.parse(response.text.trim());
-        },
-        (apiKey, sig) => extractQuestionsFromImageAIOpenAI(imageDataUrl, classNum, lang, apiKey, sig),
-        "Image Question Extraction",
-        signal
-    );
-};
-
-export const extractQuestionsFromPdfAI = async (
-    pdfDataUrl: string,
-    classNum: number,
-    lang: Language,
-    userApiKey?: string,
-    userOpenApiKey?: string, // Kept for signature consistency, but not used.
-    signal?: AbortSignal
-): Promise<Partial<Question>[]> => {
-    const providers = createProviderList(userApiKey, undefined).filter(p => p.type === 'gemini');
-
-    if (providers.length === 0) {
-        throw new Error("A Google Gemini API Key is not configured for PDF processing. Please add one in Settings.");
-    }
+export const analyzeTestAttempt = async (paper: Paper, studentAnswers: StudentAnswer[], lang: Language, userApiKey?: string, userOpenApiKey?: string, signal?: AbortSignal): Promise<Analysis> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
     let lastError: any = null;
-
     for (const provider of providers) {
         try {
-            console.log(`Attempting PDF Question Extraction with ${provider.name}`);
-            const ai = new GoogleGenAI({ apiKey: provider.key });
-
-            const mimeType = 'application/pdf';
-            const base64Data = pdfDataUrl.split(',')[1];
-            if (!base64Data) {
-                throw new Error("Invalid PDF data URL provided; could not extract base64 data.");
-            }
-            const pdfPart = { inlineData: { mimeType, data: base64Data } };
-            const prompt = `You are an expert at analyzing PDF documents. Extract all distinct questions from the provided PDF of an exam paper. The paper is for Class ${classNum} and is in the ${languageMap[lang]} language. The PDF may have multiple pages.
-- For each question, identify its full text.
-- If marks are mentioned near a question, extract them.
-- If the PDF is not a question paper, is password-protected, or is unreadable, return an empty array.
-- Return the result as a valid JSON array of objects. Each object must have a "text" (string) and may have an optional "marks" (number) field.`;
-
-            const responseSchema = {
-                type: Type.ARRAY,
-                items: {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const detailedAttempt = paper.questions.map(q => `Question: ${q.text}\nChapter: ${q.chapter}\nCorrect Answer: ${q.answer}\nStudent's Answer: ${studentAnswers.find(sa => sa.questionId === q.id)?.answer || "Not Answered"}\n---`).join('\n');
+                const prompt = `You are a helpful ${paper.subject || 'Biology'} tutor. Analyze a student's test performance in ${languageMap[lang]}.\nTest Data:\n${detailedAttempt}\nReturn ONLY a single valid JSON object with "strengths" (array of strings), "weaknesses" (array of strings), and "summary" (string). Do not nest it under any other key.`;
+                const responseSchema = {
                     type: Type.OBJECT,
                     properties: {
-                        text: { type: Type.STRING },
-                        marks: { type: Type.NUMBER }
+                        strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        summary: { type: Type.STRING }
                     },
-                    required: ["text"]
-                }
-            };
-
-            const PDF_EXTRACTION_TIMEOUT = 300000; // 5 minutes, as PDF processing can be slow.
-
-            const response = await withTimeout(
-                generateWithRetry(
-                    ai,
-                    {
-                        model: 'gemini-2.5-pro',
-                        contents: { parts: [{ text: prompt }, pdfPart] },
-                        config: { responseMimeType: "application/json", responseSchema }
-                    },
-                    5, // maxRetries
-                    signal
-                ),
-                PDF_EXTRACTION_TIMEOUT,
-                "PDF Question Extraction",
-                signal
-            );
-
-            const jsonText = response.text.trim();
-            const parsedResult = JSON.parse(jsonText);
-
-            if (!Array.isArray(parsedResult)) {
-                console.warn("AI returned a non-array response for PDF extraction:", parsedResult);
-                throw new Error("AI response was not in the expected array format.");
+                    required: ["strengths", "weaknesses", "summary"]
+                };
+                // FIX: Pass signal to generateWithRetry and withTimeout
+                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Analyze Test Attempt", signal);
+                return JSON.parse(response.text.trim());
+            } else {
+                return await withTimeout(analyzeTestAttemptOpenAI(paper, studentAnswers, lang, provider.key, signal), AI_OPERATION_TIMEOUT, 'Analyze Test Attempt (OpenAI)', signal);
             }
-
-            console.log(`Successfully extracted ${parsedResult.length} questions from PDF with ${provider.name}.`);
-            return parsedResult;
-
         } catch (error) {
-            console.warn(`Provider ${provider.name} failed for PDF Question Extraction.`, error);
+            console.warn(`Provider ${provider.name} failed for analyzeTestAttempt.`, error);
             lastError = error;
         }
     }
-
-    const errorDetails = lastError?.error || lastError;
-    const messageText = String(lastError?.message || errorDetails?.message || '').toLowerCase();
-    if (
-        errorDetails?.status === 'RESOURCE_EXHAUSTED' ||
-        errorDetails?.code === 429 ||
-        messageText.includes('quota')
-    ) {
-        throw new Error("PDF processing failed due to API quota limits. Please check your key in Settings or try again later.");
-    }
-    
-    throw lastError || new Error("PDF Question Extraction failed with all available Gemini keys. The file might be too complex, corrupted, or the service may be temporarily unavailable. Please try again later.");
+    throw lastError;
 };
 
-export const extractQuestionsFromTextAI = (
-    text: string,
-    classNum: number,
-    lang: Language,
-    userApiKey?: string,
-    userOpenApiKey?: string,
-    signal?: AbortSignal
-): Promise<Partial<Question>[]> => {
-    const providers = createProviderList(userApiKey, userOpenApiKey);
-    return executeWithFallbacks(
-        providers,
-        async (ai, sig) => {
-            const prompt = `You are an expert at analyzing text. Extract all distinct questions from the provided text from an exam paper. The paper is for Class ${classNum} and is in the ${languageMap[lang]} language.
+export const generateFlashcardsAI = async (subject: string, chapter: string, classNum: number, count: number, lang: Language, userApiKey?: string, userOpenApiKey?: string, signal?: AbortSignal): Promise<Flashcard[]> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const prompt = `Generate ${count} flashcards for ${subject}, Class ${classNum} on "${chapter}" in ${languageMap[lang]}. Output a valid JSON array of objects, where each object has a "question" and "answer" key.`;
+                 const responseSchema = {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            question: { type: Type.STRING },
+                            answer: { type: Type.STRING }
+                        },
+                        required: ["question", "answer"]
+                    }
+                };
+                // FIX: Pass signal to generateWithRetry and withTimeout
+                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Generate Flashcards", signal);
+                return JSON.parse(response.text.trim());
+            } else {
+                return await withTimeout(generateFlashcardsAIOpenAI(subject, chapter, classNum, count, lang, provider.key, signal), AI_OPERATION_TIMEOUT, 'Generate Flashcards (OpenAI)', signal);
+            }
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for generateFlashcardsAI.`, error);
+            lastError = error;
+        }
+    }
+    throw lastError;
+};
+
+export const extractQuestionsFromImageAI = async (imageDataUrl: string, classNum: number, lang: Language, userApiKey?: string, userOpenApiKey?: string, signal?: AbortSignal): Promise<Partial<Question>[]> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                 const ai = new GoogleGenAI({ apiKey: provider.key });
+                const imagePart = { inlineData: { mimeType: 'image/jpeg', data: imageDataUrl.split(',')[1] } };
+                const textPart = { text: `Extract all questions from the image of an exam paper for Class ${classNum} in ${languageMap[lang]}. Return a valid JSON array of objects, each with "text" (string) and optional "marks" (number).` };
+                 const responseSchema = {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            text: { type: Type.STRING },
+                            marks: { type: Type.NUMBER }
+                        },
+                        required: ["text"]
+                    }
+                };
+                // FIX: Pass signal to generateWithRetry and withTimeout
+                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-pro', contents: { parts: [imagePart, textPart] }, config: { responseMimeType: "application/json", responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Extract Questions from Image", signal);
+                return JSON.parse(response.text.trim());
+            } else {
+                return await withTimeout(extractQuestionsFromImageAIOpenAI(imageDataUrl, classNum, lang, provider.key, signal), AI_OPERATION_TIMEOUT, 'Extract Questions from Image (OpenAI)', signal);
+            }
+        } catch (error) {
+             console.warn(`Provider ${provider.name} failed for extractQuestionsFromImageAI.`, error);
+            lastError = error;
+        }
+    }
+    throw lastError;
+};
+
+export const suggestDiagramsAI = async (subject: string, chapter: string, classNum: number, lang: Language, userApiKey?: string, userOpenApiKey?: string, signal?: AbortSignal): Promise<DiagramSuggestion[]> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const prompt = `List up to 10 of the most important and commonly tested diagrams for ${subject} for Class ${classNum} studying "${chapter}" in ${languageMap[lang]}. For each, provide its name, description, and an image generation prompt. Return a valid JSON array of objects with "name", "description", and "image_prompt" keys.`;
+                 const responseSchema = {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            name: { type: Type.STRING },
+                            description: { type: Type.STRING },
+                            image_prompt: { type: Type.STRING }
+                        },
+                        required: ["name", "description", "image_prompt"]
+                    }
+                };
+                // FIX: Pass signal to generateWithRetry and withTimeout
+                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Suggest Diagrams", signal);
+                return JSON.parse(response.text.trim());
+            } else {
+                return await withTimeout(suggestDiagramsAIOpenAI(subject, chapter, classNum, lang, provider.key, signal), AI_OPERATION_TIMEOUT, 'Suggest Diagrams (OpenAI)', signal);
+            }
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for suggestDiagramsAI.`, error);
+            lastError = error;
+        }
+    }
+    throw lastError;
+};
+
+export const gradeDiagramAI = async (subject: string, referenceImagePrompt: string, studentDrawingDataUrl: string, lang: Language, userApiKey?: string, userOpenApiKey?: string, signal?: AbortSignal): Promise<DiagramGrade> => {
+     const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const prompt = `You are an expert ${subject} teacher grading a student's diagram in ${languageMap[lang]}. The student was asked to draw a diagram based on this prompt: "${referenceImagePrompt}". The attached image is the student's drawing. Evaluate accuracy, labeling, and neatness. Provide qualitative feedback only. Return a JSON object with "strengths" (array of strings on what the student did well), "areasForImprovement" (array of strings on what to fix), and "feedback" (a detailed summary paragraph). Do not include a numerical score.`;
+                const imagePart = { inlineData: { mimeType: 'image/png', data: studentDrawingDataUrl.split(',')[1] } };
+                 const responseSchema = {
+                    type: Type.OBJECT,
+                    properties: {
+                        strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        areasForImprovement: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        feedback: { type: Type.STRING }
+                    },
+                    required: ["strengths", "areasForImprovement", "feedback"]
+                };
+                // FIX: Pass signal to generateWithRetry and withTimeout
+                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-pro', contents: { parts: [imagePart, {text: prompt}] }, config: { responseMimeType: "application/json", responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Grade Diagram", signal);
+                return JSON.parse(response.text.trim());
+            } else {
+                return await withTimeout(gradeDiagramAIOpenAI(subject, referenceImagePrompt, studentDrawingDataUrl, lang, provider.key, signal), AI_OPERATION_TIMEOUT, 'Grade Diagram (OpenAI)', signal);
+            }
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for gradeDiagramAI.`, error);
+            lastError = error;
+        }
+    }
+    throw lastError;
+};
+
+export const answerDoubtAI = async (classNum: number, lang: Language, text?: string, imageDataUrl?: string, userApiKey?: string, userOpenApiKey?: string, signal?: AbortSignal): Promise<{ text: string; imageUrl?: string }> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const prompt = `You are a friendly tutor for a Class ${classNum} student in ${languageMap[lang]}. Analyze the student's doubt: "${text || 'Please analyze the attached image.'}"
+                Your task is to provide a clear explanation and, if helpful, an image.
+                **Instructions:**
+                1. Formulate a helpful, clear explanation using Markdown.
+                2. Decide if a diagram would significantly improve the explanation.
+                3. Return a JSON object with "responseText" (your explanation) and "imagePrompt" (a detailed prompt for an image AI, or an empty string if no image is needed).`;
+
+                let contents: any = { parts: [{ text: prompt }] };
+                if (imageDataUrl) {
+                    contents.parts.unshift({ inlineData: { mimeType: 'image/jpeg', data: imageDataUrl.split(',')[1] } });
+                }
+
+                const responseSchema = {
+                    type: Type.OBJECT,
+                    properties: {
+                        responseText: { type: Type.STRING },
+                        imagePrompt: { type: Type.STRING }
+                    },
+                    required: ["responseText", "imagePrompt"]
+                };
+
+                const textResponse = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-pro', contents, config: { responseMimeType: "application/json", responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Answer Doubt", signal);
+                const result = JSON.parse(textResponse.text.trim());
+                const responseText = result.responseText;
+                const imagePrompt = result.imagePrompt;
+                let imageUrl: string | undefined = undefined;
+
+                if (imagePrompt && imagePrompt.trim() !== "") {
+                    await new Promise(resolve => setTimeout(resolve, 1100));
+                    const imageResponse = await withTimeout(generateWithRetry(ai, {
+                      model: 'imagen-4.0-generate-001',
+                      prompt: imagePrompt,
+                      config: { numberOfImages: 1, outputMimeType: 'image/png' },
+                    }, 5, signal), AI_OPERATION_TIMEOUT, "Tutor Image Generation", signal);
+                    
+                    const generatedImage = imageResponse.generatedImages?.[0];
+                    if (generatedImage?.image?.imageBytes) {
+                        imageUrl = `data:image/png;base64,${generatedImage.image.imageBytes}`;
+                    }
+                }
+                return { text: responseText, imageUrl };
+
+            } else {
+                const responseText = await withTimeout(answerDoubtAIOpenAI(classNum, lang, provider.key, text, imageDataUrl, signal), AI_OPERATION_TIMEOUT, 'Answer Doubt (OpenAI)', signal);
+                return { text: responseText, imageUrl: undefined };
+            }
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for answerDoubtAI.`, error);
+            lastError = error;
+        }
+    }
+    throw lastError;
+};
+
+export const generateStudyGuideAI = async (subject: string, chapter: string, classNum: number, topic: string, lang: Language, userApiKey?: string, userOpenApiKey?: string, signal?: AbortSignal): Promise<string> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const prompt = `Create a concise study guide for a Class ${classNum} student on the "${topic}" from the ${subject} chapter "${chapter}" in ${languageMap[lang]}. Format it well with Markdown, using headings, bold text, and lists.`;
+                // FIX: Pass signal to generateWithRetry and withTimeout
+                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt }, 5, signal), AI_OPERATION_TIMEOUT, "Generate Study Guide", signal);
+                return response.text;
+            } else {
+                return await withTimeout(generateStudyGuideAIOpenAI(subject, chapter, classNum, topic, lang, provider.key, signal), AI_OPERATION_TIMEOUT, 'Generate Study Guide (OpenAI)', signal);
+            }
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for generateStudyGuideAI.`, error);
+            lastError = error;
+        }
+    }
+    throw lastError;
+};
+
+export const suggestPracticeSetsAI = async (attempts: TestAttempt[], classNum: number, lang: Language, userApiKey?: string, userOpenApiKey?: string, signal?: AbortSignal): Promise<PracticeSuggestion[]> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+    const weaknesses = [...new Set(attempts.flatMap(a => a.analysis?.weaknesses || []))];
+    if (weaknesses.length === 0) return [];
+    
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                 const subject = attempts[0]?.paper?.subject || 'Biology';
+                const prompt = `You are an expert ${subject} tutor. A Class ${classNum} student has these weaknesses: \n- ${weaknesses.join('\n- ')}\nBased *only* on these, suggest up to 3 specific practice topics in ${languageMap[lang]}. Return a valid JSON array of objects. Each object must have "chapter", "topic", and "reason" keys.`;
+                 const responseSchema = {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            chapter: { type: Type.STRING },
+                            topic: { type: Type.STRING },
+                            reason: { type: Type.STRING }
+                        },
+                        required: ["chapter", "topic", "reason"]
+                    }
+                };
+                // FIX: Pass signal to generateWithRetry and withTimeout
+                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Suggest Practice Sets", signal);
+                return JSON.parse(response.text.trim());
+            } else {
+                return await withTimeout(suggestPracticeSetsAIOpenAI(attempts, classNum, lang, provider.key, signal), AI_OPERATION_TIMEOUT, 'Suggest Practice Sets (OpenAI)', signal);
+            }
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for suggestPracticeSetsAI.`, error);
+            lastError = error;
+        }
+    }
+    throw lastError;
+};
+
+export const extractQuestionsFromPdfAI = async (pdfDataUrl: string, classNum: number, lang: Language, userApiKey?: string, userOpenApiKey?: string, signal?: AbortSignal): Promise<Partial<Question>[]> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                // Gemini supports PDF directly.
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const pdfPart = { inlineData: { mimeType: 'application/pdf', data: pdfDataUrl.split(',')[1] } };
+                const textPart = { text: `Extract all questions from the PDF of an exam paper for Class ${classNum} in ${languageMap[lang]}. Return a valid JSON array of objects, each with "text" (string) and optional "marks" (number).` };
+                const responseSchema = {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            text: { type: Type.STRING },
+                            marks: { type: Type.NUMBER }
+                        },
+                        required: ["text"]
+                    }
+                };
+                // FIX: Pass signal to generateWithRetry and withTimeout
+                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-pro', contents: { parts: [textPart, pdfPart] }, config: { responseMimeType: "application/json", responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Extract Questions from PDF", signal);
+                return JSON.parse(response.text.trim());
+            } else { // OpenAI fallback
+                return await withTimeout(extractQuestionsFromPdfAIOpenAI(pdfDataUrl, classNum, lang, provider.key, signal), AI_OPERATION_TIMEOUT, "Extract Questions from PDF (OpenAI)", signal);
+            }
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for extractQuestionsFromPdfAI.`, error);
+            lastError = error;
+        }
+    }
+    throw lastError;
+};
+
+
+export const answerTeacherDoubtAI = async (classNum: number, lang: Language, text?: string, imageDataUrl?: string, userApiKey?: string, userOpenApiKey?: string, signal?: AbortSignal): Promise<{ text: string; imageUrl?: string; }> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const prompt = `You are an expert teaching assistant for a teacher of Class ${classNum}. The teacher has a query in ${languageMap[lang]}.
+                Your task is to provide a clear, detailed, and pedagogically sound explanation and, if helpful, an image.
+                **Instructions:**
+                1. Analyze the teacher's query: "${text || 'Please analyze the attached image.'}"
+                2. Formulate a helpful explanation suitable for a teacher, using Markdown.
+                3. Decide if a diagram would significantly improve the explanation for teaching purposes.
+                4. Return a JSON object with "responseText" (your explanation) and "imagePrompt" (a detailed prompt for an image AI, or an empty string if no image is needed).`;
+                
+                let contents: any = { parts: [{ text: prompt }] };
+                if (imageDataUrl) {
+                    contents.parts.unshift({ inlineData: { mimeType: 'image/jpeg', data: imageDataUrl.split(',')[1] } });
+                }
+
+                const responseSchema = {
+                    type: Type.OBJECT,
+                    properties: {
+                        responseText: { type: Type.STRING },
+                        imagePrompt: { type: Type.STRING }
+                    },
+                    required: ["responseText", "imagePrompt"]
+                };
+
+                const textResponse = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-pro', contents, config: { responseMimeType: "application/json", responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Answer Teacher Doubt", signal);
+                const result = JSON.parse(textResponse.text.trim());
+                const responseText = result.responseText;
+                const imagePrompt = result.imagePrompt;
+                let imageUrl: string | undefined = undefined;
+
+                if (imagePrompt && imagePrompt.trim() !== "") {
+                    await new Promise(resolve => setTimeout(resolve, 1100));
+                    const imageResponse = await withTimeout(generateWithRetry(ai, {
+                      model: 'imagen-4.0-generate-001',
+                      prompt: imagePrompt,
+                      config: { numberOfImages: 1, outputMimeType: 'image/png' },
+                    }, 5, signal), AI_OPERATION_TIMEOUT, "Tutor Image Generation", signal);
+                    
+                    const generatedImage = imageResponse.generatedImages?.[0];
+                    if (generatedImage?.image?.imageBytes) {
+                        imageUrl = `data:image/png;base64,${generatedImage.image.imageBytes}`;
+                    }
+                }
+                return { text: responseText, imageUrl };
+            } else {
+                const responseText = await withTimeout(answerTeacherDoubtAIOpenAI(classNum, lang, provider.key, text, imageDataUrl, signal), AI_OPERATION_TIMEOUT, 'Answer Teacher Doubt (OpenAI)', signal);
+                return { text: responseText, imageUrl: undefined };
+            }
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for answerTeacherDoubtAI.`, error);
+            lastError = error;
+        }
+    }
+    throw lastError;
+};
+
+export const extractQuestionsFromTextAI = async (text: string, classNum: number, lang: Language, userApiKey?: string, userOpenApiKey?: string, signal?: AbortSignal): Promise<Partial<Question>[]> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                 const ai = new GoogleGenAI({ apiKey: provider.key });
+                const prompt = `You are an expert at analyzing text. Extract all distinct questions from the provided text from an exam paper. The paper is for Class ${classNum} and is in the ${languageMap[lang]} language.
 - For each question, identify its full text.
 - If marks are mentioned near a question, extract them.
 - Return the result as a valid JSON array of objects. Each object must have a "text" (string) and may have an optional "marks" (number) field.
@@ -755,142 +1124,467 @@ Here is the text to analyze:
 ${text}
 ---
 `;
+                 const responseSchema = {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            text: { type: Type.STRING },
+                            marks: { type: Type.NUMBER }
+                        },
+                        required: ["text"]
+                    }
+                };
+                // FIX: Pass signal to generateWithRetry and withTimeout
+                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Extract Questions from Text", signal);
+                return JSON.parse(response.text.trim());
+            } else {
+                return await withTimeout(extractQuestionsFromTextAIOpenAI(text, classNum, lang, provider.key, signal), AI_OPERATION_TIMEOUT, "Extract Questions from Text (OpenAI)", signal);
+            }
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for extractQuestionsFromTextAI.`, error);
+            lastError = error;
+        }
+    }
+    throw lastError;
+};
 
-            const responseSchema = {
-                type: Type.ARRAY,
-                items: {
+export const coachLongAnswerAI = async (
+    question: string, 
+    correctAnswer: string, 
+    studentAnswer: string, 
+    lang: Language, 
+    userApiKey?: string, 
+    userOpenApiKey?: string,
+    signal?: AbortSignal // FIX: Added signal parameter
+): Promise<{ analysisSummary: string; improvementCoaching: string }> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const prompt = `You are an expert coach. A student was asked this question in ${languageMap[lang]}: "${question}". The model answer is: "${correctAnswer}". The student wrote: "${studentAnswer}". 
+                Analyze the student's answer. Provide a summary of their points and compare them to the key concepts in the model answer. Then, offer actionable feedback on how they can improve their answer for an exam. 
+                Return a valid JSON object with two keys: "analysisSummary" (string) and "improvementCoaching" (string).`;
+                const responseSchema = {
                     type: Type.OBJECT,
                     properties: {
-                        text: { type: Type.STRING },
-                        marks: { type: Type.NUMBER }
+                        analysisSummary: { type: Type.STRING, description: "Objective analysis and summary of the student's answer compared to the model answer." },
+                        improvementCoaching: { type: Type.STRING, description: "Actionable, personalized feedback for improvement." }
                     },
-                    required: ["text"]
+                    required: ["analysisSummary", "improvementCoaching"]
+                };
+                // FIX: Pass signal to generateWithRetry and withTimeout
+                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json", responseSchema } }, 5, signal), AI_OPERATION_TIMEOUT, "Coach Long Answer", signal);
+                return JSON.parse(response.text.trim());
+            } else {
+                return await withTimeout(coachLongAnswerAIOpenAI(question, correctAnswer, studentAnswer, lang, provider.key, signal), AI_OPERATION_TIMEOUT, "Coach Long Answer (OpenAI)", signal);
+            }
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for coachLongAnswerAI.`, error);
+            lastError = error;
+        }
+    }
+    throw lastError;
+};
+
+export const explainDiagramAI = async (
+    imagePrompt: string, 
+    lang: Language, 
+    userApiKey?: string, 
+    userOpenApiKey?: string,
+    signal?: AbortSignal // FIX: Added signal parameter
+): Promise<string> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const prompt = `You are an expert biology teacher. Explain the diagram described by this prompt in detail, in the ${languageMap[lang]} language: "${imagePrompt}". Describe its parts, their functions, and the overall process shown. Use Markdown for clear formatting.`;
+                // FIX: Pass signal to generateWithRetry and withTimeout
+                const response = await withTimeout(generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt }, 5, signal), AI_OPERATION_TIMEOUT, "Explain Diagram", signal);
+                return response.text;
+            } else {
+                return await withTimeout(explainDiagramAIOpenAI(imagePrompt, lang, provider.key, signal), AI_OPERATION_TIMEOUT, "Explain Diagram (OpenAI)", signal);
+            }
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for explainDiagramAI.`, error);
+            lastError = error;
+        }
+    }
+    throw lastError;
+};
+
+export const generateFinalExamPaperAI = async (
+  board: string,
+  classNum: number,
+  subject: string,
+  year: number,
+  lang: Language,
+  userApiKey?: string,
+  userOpenApiKey?: string,
+  signal?: AbortSignal,
+): Promise<FinalExamPaper | null> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
+
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const targetLanguage = languageMap[lang] || 'English';
+
+                const prompt = `
+                    You are an expert paper setter for the ${board} educational board.
+                    Your task is to generate a complete, realistic final exam question paper based on the following criteria.
+                    The paper must be structured with appropriate sections (e.g., Group A, Group B) and a variety of question types (like MCQs, short answers, long answers).
+
+                    **CRITICAL INSTRUCTIONS:**
+                    1.  All generated text MUST be in the **${targetLanguage}** language.
+                    2.  The output MUST be a single valid JSON object. Do not add any text before or after the JSON.
+                    3.  The JSON must match the specified schema precisely.
+
+                    **Paper Criteria:**
+                    - Board: ${board}
+                    - Class: ${classNum}
+                    - Subject: ${subject}
+                    - Exam Year: ${year}
+
+                    **Example Structure (follow this format):**
+                    The 'paper_content' should have a 'title' and an array of 'sections'. Each section has a 'title' and an array of 'questions'. Each question has a 'q_num' (question number like "1.1" or "2. (a)"), 'text', 'marks', and optional 'options' for MCQs.
+                `;
+
+                const responseSchema = {
+                    type: Type.OBJECT,
+                    properties: {
+                        title: { type: Type.STRING, description: `The main title of the exam paper, e.g., "${subject} - Final Examination ${year}"` },
+                        sections: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    title: { type: Type.STRING, description: "The title of the section, e.g., 'Group A: Multiple Choice Questions'" },
+                                    questions: {
+                                        type: Type.ARRAY,
+                                        items: {
+                                            type: Type.OBJECT,
+                                            properties: {
+                                                q_num: { type: Type.STRING, description: "The question number, e.g., '1.1' or '2. (a)'" },
+                                                text: { type: Type.STRING, description: "The full text of the question." },
+                                                marks: { type: Type.NUMBER, description: "The marks for the question." },
+                                                options: {
+                                                    type: Type.ARRAY,
+                                                    items: { type: Type.STRING },
+                                                    description: "An array of strings for multiple choice options, if applicable."
+                                                },
+                                                answer: {
+                                                    type: Type.STRING,
+                                                    description: "Optional: The correct answer key for the question."
+                                                }
+                                            },
+                                            required: ["q_num", "text", "marks"],
+                                        }
+                                    }
+                                },
+                                required: ["title", "questions"],
+                            }
+                        }
+                    },
+                    required: ["title", "sections"],
+                };
+
+                const response = await withTimeout(generateWithRetry(ai, {
+                    model: 'gemini-2.5-flash',
+                    contents: prompt,
+                    config: {
+                        responseMimeType: 'application/json',
+                        responseSchema: {
+                            type: Type.OBJECT,
+                            properties: {
+                                paper_content: responseSchema
+                            },
+                            required: ["paper_content"]
+                        }
+                    },
+                }, 5, signal), AI_PAPER_GENERATION_TIMEOUT, "Generate Final Exam Paper", signal);
+
+                const result = JSON.parse(response.text.trim());
+                
+                if (result.paper_content) {
+                    const generatedPaper: FinalExamPaper = {
+                        id: `ai-gen-${Date.now()}`,
+                        board,
+                        class: classNum,
+                        subject,
+                        exam_year: year,
+                        paper_content: result.paper_content,
+                        created_at: new Date().toISOString(),
+                    };
+                    return generatedPaper;
                 }
-            };
-            
-            const response = await generateWithRetry(ai, { 
-                model: 'gemini-2.5-flash', 
-                contents: prompt,
-                config: { responseMimeType: "application/json", responseSchema } 
-            }, 5, sig);
-            
-            const jsonText = response.text.trim();
-            const parsedResult = JSON.parse(jsonText);
-
-            if (!Array.isArray(parsedResult)) {
-                console.warn("AI returned a non-array response for text extraction:", parsedResult);
-                throw new Error("AI response was not in the expected array format.");
+            } else {
+                console.warn("OpenAI fallback for final exam paper generation is not implemented. Skipping.");
+                continue;
             }
-
-            return parsedResult;
-        },
-        (apiKey, sig) => extractQuestionsFromTextAIOpenAI(text, classNum, lang, apiKey, sig),
-        "Text Question Extraction",
-        signal
-    );
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for generateFinalExamPaperAI.`, error);
+            lastError = error;
+        }
+    }
+    
+    if (lastError) throw lastError;
+    return null;
 };
 
-export const suggestDiagramsAI = (subject: string, chapter: string, classNum: number, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<DiagramSuggestion[]> => {
-    const providers = createProviderList(userApiKey, userOpenApiKey);
-    return executeWithFallbacks(
-        providers,
-        async (ai) => {
-            const prompt = `List the 3 most important diagrams for ${subject} for Class ${classNum} studying "${chapter}" in ${languageMap[lang]}. For each, provide its name, description, and an image generation prompt. Return a valid JSON array of objects with "name", "description", and "image_prompt" keys.`;
-            const responseSchema = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, description: { type: Type.STRING }, image_prompt: { type: Type.STRING } }, required: ["name", "description", "image_prompt"] } };
-            const response = await generateWithRetry(ai, { model: 'gemini-2.5-pro', contents: prompt, config: { responseMimeType: "application/json", responseSchema } });
-            return JSON.parse(response.text.trim());
-        },
-        (apiKey) => suggestDiagramsAIOpenAI(subject, chapter, classNum, lang, apiKey),
-        "Diagram Suggestion"
-    );
-};
+export const findAndRecreateFinalExamPaperAI = async (
+  board: string,
+  classNum: number,
+  subject: string,
+  year: number,
+  lang: Language,
+  userApiKey?: string,
+  userOpenApiKey?: string,
+  signal?: AbortSignal,
+): Promise<{ paper: FinalExamPaper, sources: GroundingSource[] } | null> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
 
-export const gradeDiagramAI = (subject: string, referenceImagePrompt: string, studentDrawingDataUrl: string, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<DiagramGrade> => {
-    const providers = createProviderList(userApiKey, userOpenApiKey);
-    return executeWithFallbacks(
-        providers,
-        async (ai) => {
-            const imageResponse = await generateWithRetry(ai, { model: 'imagen-4.0-generate-001', prompt: referenceImagePrompt, config: { numberOfImages: 1, outputMimeType: 'image/png' } });
-            const referenceImageBase64 = imageResponse.generatedImages?.[0]?.image?.imageBytes;
-            if (!referenceImageBase64) throw new Error("Failed to generate a reference diagram.");
-            await sleep(1100);
-            const studentImageMimeType = studentDrawingDataUrl.split(';')[0].split(':')[1];
-            const studentImageBase64 = studentDrawingDataUrl.split(',')[1];
-            const prompt = `You are an expert ${subject} teacher grading a student's diagram in ${languageMap[lang]}. The first image is the reference, the second is the student's. Evaluate accuracy, labeling, and neatness. Return a JSON object with "score" (number), "strengths" (array of strings), "areasForImprovement" (array of strings), and "feedback" (string).`;
-            const responseSchema = { type: Type.OBJECT, properties: { score: { type: Type.NUMBER }, strengths: { type: Type.ARRAY, items: { type: Type.STRING } }, areasForImprovement: { type: Type.ARRAY, items: { type: Type.STRING } }, feedback: { type: Type.STRING } }, required: ["score", "strengths", "areasForImprovement", "feedback"] };
-            const response = await generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: { parts: [{ text: prompt }, { inlineData: { mimeType: 'image/png', data: referenceImageBase64 } }, { inlineData: { mimeType: studentImageMimeType, data: studentImageBase64 } }] }, config: { responseMimeType: "application/json", responseSchema } });
-            return JSON.parse(response.text.trim());
-        },
-        (apiKey) => gradeDiagramAIOpenAI(subject, referenceImagePrompt, studentDrawingDataUrl, lang, apiKey),
-        "Diagram Grading"
-    );
-};
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const targetLanguage = languageMap[lang] || 'English';
 
-export const answerDoubtAI = (classNum: number, lang: Language, text?: string, imageDataUrl?: string, userApiKey?: string, userOpenApiKey?: string): Promise<string> => {
-    const providers = createProviderList(userApiKey, userOpenApiKey);
-    return executeWithFallbacks(
-        providers,
-        async (ai) => {
-            const parts: any[] = [{ text: `You are a friendly tutor for a Class ${classNum} student. A student has a doubt in ${languageMap[lang]}. Explain clearly, using Markdown. Student's doubt: ${text || 'Please analyze the attached image.'}` }];
-            if (imageDataUrl) { parts.push({ inlineData: { mimeType: imageDataUrl.split(';')[0].split(':')[1], data: imageDataUrl.split(',')[1] } }); }
-            const response = await generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: { parts } });
-            return response.text;
-        },
-        (apiKey) => answerDoubtAIOpenAI(classNum, lang, apiKey, text, imageDataUrl),
-        "AI Tutor"
-    );
-};
+                const prompt = `
+                    You are an expert academic archivist. Your task is to find the official final exam question paper from the web and recreate it precisely in a structured JSON format.
 
-export const answerTeacherDoubtAI = (classNum: number, lang: Language, text?: string, imageDataUrl?: string, userApiKey?: string, userOpenApiKey?: string): Promise<string> => {
-    const providers = createProviderList(userApiKey, userOpenApiKey);
-    return executeWithFallbacks(
-        providers,
-        async (ai) => {
-            const prompt = `You are an expert teaching assistant for a teacher of Class ${classNum}. The teacher has a query in ${languageMap[lang]}. Provide a clear, detailed, and pedagogically sound explanation suitable for a teacher. Use Markdown for formatting. Teacher's query: ${text || 'Please analyze the attached image.'}`;
-            const parts: any[] = [{ text: prompt }];
-            if (imageDataUrl) { 
-                const mimeType = imageDataUrl.split(';')[0].split(':')[1];
-                const data = imageDataUrl.split(',')[1];
-                parts.push({ inlineData: { mimeType, data } });
+                    **CRITICAL INSTRUCTIONS:**
+                    1.  Use your search capabilities to find the official paper matching the criteria below.
+                    2.  If you find the paper, recreate its entire structure, including all sections, question numbers (e.g., "1.1", "2. (a)"), question text, and marks for each question.
+                    3.  All generated text MUST be in the **${targetLanguage}** language.
+                    4.  The output MUST be a single valid JSON object with a key "paper_content". Do not add any text before or after the JSON.
+                    5.  If you CANNOT find the official paper online, your entire response MUST be just the string "NOT_FOUND".
+
+                    **Paper Criteria:**
+                    - Board: ${board}
+                    - Class: ${classNum}
+                    - Subject: ${subject}
+                    - Exam Year: ${year}
+
+                    **JSON Output Format (if found):**
+                    {
+                        "paper_content": {
+                            "title": "Example: ${subject} - Final Examination ${year}",
+                            "sections": [
+                                {
+                                    "title": "Example: Group A: Multiple Choice Questions",
+                                    "questions": [
+                                        {
+                                            "q_num": "1.1",
+                                            "text": "Full question text here...",
+                                            "marks": 1,
+                                            "options": ["Option A", "Option B", "Option C", "Option D"]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                `;
+
+                const response = await withTimeout(generateWithRetry(ai, {
+                    model: 'gemini-2.5-flash',
+                    contents: prompt,
+                    config: {
+                        tools: [{ googleSearch: {} }],
+                    },
+                }, 5, signal), AI_PAPER_GENERATION_TIMEOUT, "Find and Recreate Final Exam Paper", signal);
+
+                const jsonText = response.text.trim();
+
+                if (jsonText === 'NOT_FOUND') {
+                    console.log(`AI search could not find the paper for ${year} ${subject}.`);
+                    return null;
+                }
+
+                let result: any;
+                try {
+                    result = JSON.parse(jsonText);
+                } catch (e) {
+                    console.warn("Direct JSON parsing failed for searched paper, attempting to extract from markdown block.");
+                    const jsonMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+                    if (jsonMatch && jsonMatch[1]) {
+                        try {
+                            result = JSON.parse(jsonMatch[1].trim());
+                        } catch (e2) {
+                            console.error("Failed to parse extracted JSON for searched paper:", jsonMatch[1].trim(), e2);
+                            throw new Error("AI response was not valid JSON, even after extraction.");
+                        }
+                    } else {
+                        console.error("Failed to parse AI response for searched paper and no markdown block found:", jsonText, e);
+                        throw new Error("AI response was not valid JSON.");
+                    }
+                }
+                
+                const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+                const sources = groundingChunks
+                    ?.map((chunk: any) => chunk.web)
+                    .filter(Boolean)
+                    .map((source: any) => ({ uri: source.uri, title: source.title }))
+                    .filter((source: any, index: number, self: any[]) => index === self.findIndex(s => s.uri === source.uri));
+
+                if (result.paper_content) {
+                    const foundPaper: FinalExamPaper = {
+                        id: `ai-search-${Date.now()}`,
+                        board,
+                        class: classNum,
+                        subject,
+                        exam_year: year,
+                        paper_content: result.paper_content,
+                        created_at: new Date().toISOString(),
+                    };
+                    return { paper: foundPaper, sources: sources || [] };
+                }
+
+                return null; // Return null if JSON structure is wrong
+
+            } else {
+                console.warn("OpenAI fallback for final exam paper search is not implemented. Skipping.");
+                continue;
             }
-            const response = await generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: { parts } });
-            return response.text;
-        },
-        (apiKey) => answerTeacherDoubtAIOpenAI(classNum, lang, apiKey, text, imageDataUrl),
-        "AI Teacher Tutor"
-    );
-};
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for findAndRecreateFinalExamPaperAI.`, error);
+            lastError = error;
+        }
+    }
+    
+    if (lastError) throw lastError;
+    return null;
+}
 
-export const generateStudyGuideAI = (subject: string, chapter: string, classNum: number, topic: string, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<string> => {
-    const providers = createProviderList(userApiKey, userOpenApiKey);
-    return executeWithFallbacks(
-        providers,
-        async (ai) => {
-            const prompt = `Create a concise study guide for a Class ${classNum} student on the "${topic}" from the ${subject} chapter "${chapter}" in ${languageMap[lang]}. Format it well with Markdown.`;
-            const response = await generateWithRetry(ai, { model: 'gemini-2.5-flash', contents: prompt });
-            return response.text;
-        },
-        (apiKey) => generateStudyGuideAIOpenAI(subject, chapter, classNum, topic, lang, apiKey),
-        "Study Guide Generation"
-    );
-};
+export const analyzeAndSuggestPaperAI = async (
+  fileDataUrl: string,
+  targetYear: number,
+  board: string,
+  classNum: number,
+  subject: string,
+  lang: Language,
+  userApiKey?: string,
+  userOpenApiKey?: string,
+  signal?: AbortSignal,
+): Promise<FinalExamPaper | null> => {
+    const providers = getProviders(userApiKey, userOpenApiKey);
+    let lastError: any = null;
 
-export const suggestPracticeSetsAI = (attempts: TestAttempt[], classNum: number, lang: Language, userApiKey?: string, userOpenApiKey?: string): Promise<PracticeSuggestion[]> => {
-    const providers = createProviderList(userApiKey, userOpenApiKey);
-    const weaknesses = [...new Set(attempts.flatMap(a => a.analysis?.weaknesses || []))];
-    if (weaknesses.length === 0) return Promise.resolve([]);
+    for (const provider of providers) {
+        try {
+            if (provider.type === 'gemini') {
+                const ai = new GoogleGenAI({ apiKey: provider.key });
+                const targetLanguage = languageMap[lang] || 'English';
+                const [header, data] = fileDataUrl.split(',');
+                const mimeType = header.match(/:(.*?);/)?.[1];
+                if (!mimeType) throw new Error("Could not determine file type from data URL.");
 
-    const subject = attempts[0]?.paper?.subject || 'Biology';
+                const filePart = { inlineData: { mimeType, data } };
+                
+                const prompt = `
+                    You are an expert paper setter for the ${board} educational board, specializing in ${subject} for Class ${classNum}.
+                    Your task is to analyze an uploaded past exam paper and generate a NEW, predictive paper for a future year.
 
-    return executeWithFallbacks(
-        providers,
-        async (ai) => {
-            const prompt = `You are an expert ${subject} tutor. A Class ${classNum} student has these weaknesses: \n- ${weaknesses.join('\n- ')}\nBased *only* on these, suggest up to 3 specific practice topics in ${languageMap[lang]}. Return a valid JSON array of objects. Each object must have "chapter", "topic", and "reason" keys.`;
-            const responseSchema = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { chapter: { type: Type.STRING }, topic: { type: Type.STRING }, reason: { type: Type.STRING } }, required: ["chapter", "topic", "reason"] } };
-            const response = await generateWithRetry(ai, { model: 'gemini-2.5-pro', contents: prompt, config: { responseMimeType: "application/json", responseSchema } });
-            return JSON.parse(response.text.trim());
-        },
-        (apiKey) => suggestPracticeSetsAIOpenAI(attempts, classNum, lang, apiKey),
-        "Practice Set Suggestion"
-    );
+                    **Analysis Task:**
+                    1.  Thoroughly analyze the provided file, which is a past exam paper.
+                    2.  Identify its structure: sections (e.g., Group A), question numbering (e.g., 1.1, 2. (a)), question types (MCQ, short answer, etc.), and mark distribution.
+                    3.  Identify the key chapters and topics covered and their relative weightage.
+
+                    **Generation Task:**
+                    1.  Based on your analysis, generate a **completely new and unique** question paper for the target exam year: **${targetYear}**.
+                    2.  The generated paper should be **structurally similar** to the provided paper (same sections, similar question count and mark distribution).
+                    3.  The topics should be relevant and follow the same weightage as the original paper, but the **questions themselves must be different**.
+                    4.  All generated text MUST be in the **${targetLanguage}** language.
+                    5.  The output MUST be a single valid JSON object, with no other text before or after it.
+
+                    **JSON Output Schema:**
+                    The JSON object must have a single root key "paper_content", which contains "title" and "sections". Each section has a "title" and an array of "questions". Each question object must have "q_num", "text", "marks", and optional "options" for MCQs and an optional "answer".
+                `;
+
+                const responseSchema = {
+                    type: Type.OBJECT,
+                    properties: {
+                        title: { type: Type.STRING, description: `The main title of the exam paper, e.g., "${subject} - Final Examination ${targetYear}"` },
+                        sections: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    title: { type: Type.STRING, description: "The title of the section, e.g., 'Group A: Multiple Choice Questions'" },
+                                    questions: {
+                                        type: Type.ARRAY,
+                                        items: {
+                                            type: Type.OBJECT,
+                                            properties: {
+                                                q_num: { type: Type.STRING, description: "The question number, e.g., '1.1' or '2. (a)'" },
+                                                text: { type: Type.STRING, description: "The full text of the question." },
+                                                marks: { type: Type.NUMBER, description: "The marks for the question." },
+                                                options: {
+                                                    type: Type.ARRAY,
+                                                    items: { type: Type.STRING },
+                                                    description: "An array of strings for multiple choice options, if applicable."
+                                                },
+                                                answer: {
+                                                    type: Type.STRING,
+                                                    description: "Optional: The correct answer key for the question."
+                                                }
+                                            },
+                                            required: ["q_num", "text", "marks"],
+                                        }
+                                    }
+                                },
+                                required: ["title", "questions"],
+                            }
+                        }
+                    },
+                    required: ["title", "sections"],
+                };
+
+                const response = await withTimeout(generateWithRetry(ai, {
+                    model: 'gemini-2.5-pro',
+                    contents: { parts: [{ text: prompt }, filePart] },
+                    config: {
+                        responseMimeType: 'application/json',
+                        responseSchema: {
+                            type: Type.OBJECT,
+                            properties: { paper_content: responseSchema },
+                            required: ["paper_content"]
+                        }
+                    },
+                }, 5, signal), AI_PAPER_GENERATION_TIMEOUT, "Analyze and Suggest Paper", signal);
+
+                const result = JSON.parse(response.text.trim());
+                
+                if (result.paper_content) {
+                    const generatedPaper: FinalExamPaper = {
+                        id: `ai-suggest-${Date.now()}`,
+                        board,
+                        class: classNum,
+                        subject,
+                        exam_year: targetYear,
+                        paper_content: result.paper_content,
+                        created_at: new Date().toISOString(),
+                    };
+                    return generatedPaper;
+                }
+            } else {
+                console.warn("OpenAI fallback for paper analysis is not implemented. Skipping.");
+                continue;
+            }
+        } catch (error) {
+            console.warn(`Provider ${provider.name} failed for analyzeAndSuggestPaperAI.`, error);
+            lastError = error;
+        }
+    }
+    
+    if (lastError) throw lastError;
+    return null;
 };

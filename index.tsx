@@ -27,16 +27,15 @@ const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
             .select('*')
             .eq('id', initialSession.user.id)
             .single();
-
-          // If there's an error fetching the profile, or if no profile is found,
-          // the session is invalid. Treat the user as logged out.
-          if ((error && error.code !== 'PGRST116') || !data) {
-            console.error("Profile fetch failed on init, treating as logged out.", error);
-            await supabase.auth.signOut(); // Clean up the invalid session on the server
+            
+          if (error || !data) {
+            console.error("Profile fetch failed on init, treating user as logged out for this render.", error);
+            // By setting state to null but NOT calling signOut(), we allow a refresh to retry the fetch
+            // while the session token is still persisted in localStorage.
             setSession(null);
             setProfile(null);
           } else {
-            // Only if both session and profile are valid, set them.
+            // Success
             setSession(initialSession);
             setProfile(data);
           }
@@ -67,14 +66,12 @@ const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
             .eq('id', newSession.user.id)
             .single();
 
-          // A session is only valid if a corresponding profile exists.
-          if (data && (!error || error.code === 'PGRST116')) {
+          if (data && !error) {
             setSession(newSession);
             setProfile(data);
           } else {
-            // If profile fetch fails, the session is inconsistent. Force a full sign-out.
-            console.error("Profile fetch failed on auth state change. Forcing sign out.", error);
-            await supabase.auth.signOut();
+            console.error("Profile fetch failed on auth state change. Treating user as logged out for this render.", error);
+            // Don't sign out, just clear the application state.
             setSession(null);
             setProfile(null);
           }

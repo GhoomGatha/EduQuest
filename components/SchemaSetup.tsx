@@ -172,6 +172,17 @@ CREATE TABLE IF NOT EXISTS public.chapters (
 ALTER TABLE public.chapters ADD COLUMN IF NOT EXISTS subject text;
 ALTER TABLE public.chapters ADD COLUMN IF NOT EXISTS semester text;
 
+-- Update existing NULLs to default values to prepare for NOT NULL constraint.
+-- It's safe to run this multiple times.
+UPDATE public.chapters SET subject = 'default_subject' WHERE subject IS NULL;
+UPDATE public.chapters SET semester = 'all_semesters' WHERE semester IS NULL;
+
+-- Make columns non-nullable and set a default.
+ALTER TABLE public.chapters ALTER COLUMN subject SET NOT NULL;
+ALTER TABLE public.chapters ALTER COLUMN semester SET NOT NULL;
+ALTER TABLE public.chapters ALTER COLUMN subject SET DEFAULT 'default_subject';
+ALTER TABLE public.chapters ALTER COLUMN semester SET DEFAULT 'all_semesters';
+
 
 -- Update the unique constraint to include subject and semester.
 -- This is idempotent and handles both new and existing tables.
@@ -235,13 +246,39 @@ CREATE TABLE IF NOT EXISTS public.tutor_sessions (
   query_text text,
   query_image_url text,
   response_text text NOT NULL,
+  response_image_url text,
   tutor_class integer
 );
+
+-- Add 'response_image_url' column if it's missing (for migrations)
+ALTER TABLE public.tutor_sessions ADD COLUMN IF NOT EXISTS response_image_url text;
 
 -- Enable RLS for tutor_sessions and create policy
 ALTER TABLE public.tutor_sessions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Students can manage their own tutor sessions." ON public.tutor_sessions;
 CREATE POLICY "Students can manage their own tutor sessions." ON public.tutor_sessions FOR ALL USING (auth.uid() = user_id);
+
+-- 10. FINAL EXAM PAPERS TABLE
+-- Stores official board exam papers, fetched by an admin process.
+CREATE TABLE IF NOT EXISTS public.final_exam_papers (
+  id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+  board text NOT NULL,
+  class integer NOT NULL,
+  subject text NOT NULL,
+  exam_year integer NOT NULL,
+  paper_content jsonb NOT NULL,
+  created_at timestamptz DEFAULT now(),
+  CONSTRAINT final_exam_papers_unique_constraint UNIQUE (board, class, subject, exam_year)
+);
+
+-- Enable RLS for final_exam_papers and create policy
+ALTER TABLE public.final_exam_papers ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Final exam papers are publicly viewable." ON public.final_exam_papers;
+CREATE POLICY "Final exam papers are publicly viewable." ON public.final_exam_papers FOR SELECT USING (true);
+-- Optional: For enhanced security, you might allow only admins (e.g., via service_role key) to add/edit papers.
+-- DROP POLICY IF EXISTS "Admins can manage final exam papers." ON public.final_exam_papers;
+-- CREATE POLICY "Admins can manage final exam papers." ON public.final_exam_papers FOR ALL
+-- USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');
 `;
 
 const SchemaSetup: React.FC<SchemaSetupProps> = ({ onRetry, errorMessage }) => {

@@ -43,6 +43,11 @@
       color: transparent;
       animation: text-color-cycle 12s ease infinite;
     }
+    .animate-background-color-cycle {
+      background-image: linear-gradient(-45deg, #6366f1, #a855f7, #ec4899, #f59e0b, #10b981, #3b82f6);
+      background-size: 600% 600%;
+      animation: text-color-cycle 12s ease infinite;
+    }
     .animate-beat.animate-text-color-cycle {
       animation: beat 1.8s infinite ease-in-out, text-color-cycle 12s ease infinite; /* Slower and smoother */
     }
@@ -221,6 +226,11 @@
     .no-scrollbar {
         -ms-overflow-style: none;  /* IE and Edge */
         scrollbar-width: none;  /* Firefox */
+    }
+
+    /* Premium tab slider animation */
+    .premium-tab-slider {
+        transition: left 400ms cubic-bezier(0.64, 0, 0.78, 1.6), width 400ms cubic-bezier(0.64, 0, 0.78, 1.6);
     }
   </style>
 <script type="importmap">
