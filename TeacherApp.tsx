@@ -283,7 +283,6 @@ const handleSavePaper = async (paper: Paper) => {
     
     const { id: localPaperId, ...paperData } = paper;
     
-    // 1. Identify new questions (with temporary IDs) and existing questions
     const newQuestionsFromPaper = paper.questions.filter(q => q.id.startsWith('gen-'));
     const existingQuestionsFromPaper = paper.questions.filter(q => !q.id.startsWith('gen-'));
     
@@ -291,25 +290,32 @@ const handleSavePaper = async (paper: Paper) => {
 
     if (newQuestionsFromPaper.length > 0) {
         const questionsToInsert = newQuestionsFromPaper.map(q => {
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
             const { id, ...questionData } = q; 
             return { ...questionData, user_id: session.user.id };
         });
 
-        // Insert new questions and get them back with their database IDs
         const { data: newQuestionsData, error: questionsError } = await supabase
             .from('questions')
             .insert(questionsToInsert)
-            .select();
+            .select('id, created_at'); // Only select DB-generated columns
 
         if (questionsError) {
             showToast(`Failed to add new questions to bank: ${questionsError.message}`, 'error');
             return;
         }
-        savedNewQuestions = newQuestionsData || [];
+
+        if (newQuestionsData) {
+            // Manually merge DB-generated IDs back into the full original question objects
+            // This prevents losing any data (like answers or full text) if `select()` was misbehaving
+            savedNewQuestions = newQuestionsFromPaper.map((originalQuestion, index) => ({
+                ...originalQuestion,
+                id: newQuestionsData[index].id,
+                created_at: newQuestionsData[index].created_at,
+                user_id: session.user.id,
+            }));
+        }
     }
     
-    // 2. Prepare the final paper object with all questions having real database IDs
     const finalPaperQuestions = [...existingQuestionsFromPaper, ...savedNewQuestions];
     
     const paperToSave = { 
@@ -318,7 +324,6 @@ const handleSavePaper = async (paper: Paper) => {
         questions: finalPaperQuestions 
     };
 
-    // 3. Save the paper to the Exam Archive
     const { data: savedPaperData, error: paperError } = await supabase
         .from('papers')
         .insert(paperToSave)
@@ -327,13 +332,13 @@ const handleSavePaper = async (paper: Paper) => {
 
     if (paperError) {
         showToast(`Error saving paper to archive: ${paperError.message}`, 'error');
+        // Still add questions to bank even if paper saving fails
         if (savedNewQuestions.length > 0) {
             setQuestions(prev => [...savedNewQuestions, ...prev]);
         }
         return;
     }
 
-    // 4. Update local state for immediate UI refresh
     if (savedNewQuestions.length > 0) {
         setQuestions(prev => [...savedNewQuestions, ...prev]);
     }
@@ -341,7 +346,6 @@ const handleSavePaper = async (paper: Paper) => {
         setPapers(prev => [savedPaperData as Paper, ...prev]);
     }
 
-    // 5. Show appropriate success message
     if (savedNewQuestions.length > 0) {
         showToast(t('paperGeneratedWithQuestions', lang).replace('{count}', String(savedNewQuestions.length)), 'success');
     } else {
@@ -586,7 +590,7 @@ const handleSavePaper = async (paper: Paper) => {
               </div>
             </div>
             <div className="my-2 p-[1.5px] rounded-full animate-background-color-cycle">
-                <nav ref={navRef} className="relative flex items-center bg-green-50 backdrop-blur-md p-1 rounded-full overflow-x-auto no-scrollbar">
+                <nav ref={navRef} className="relative flex justify-start sm:justify-center items-center bg-green-50 backdrop-blur-md p-1 rounded-full overflow-x-auto no-scrollbar">
                     <div className="absolute bg-white rounded-full h-10 shadow-md premium-tab-slider" style={sliderStyle} aria-hidden="true" />
                     {TABS.map(tab => (
                         <button key={tab.id} data-tab-id={tab.id} onClick={() => setActiveTab(tab.id)}

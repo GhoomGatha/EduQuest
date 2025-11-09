@@ -45,7 +45,7 @@ const Nav: React.FC<NavProps> = ({ activeTab, onTabChange, lang }) => {
 
   return (
     // The nav itself no longer needs padding. The framing is handled by the parent Header.
-    <nav ref={navRef} className="relative flex items-center bg-green-50 backdrop-blur-md p-1 rounded-full overflow-x-auto no-scrollbar">
+    <nav ref={navRef} className="relative flex justify-start sm:justify-center items-center bg-green-50 backdrop-blur-md p-1 rounded-full overflow-x-auto no-scrollbar">
       <div
         className="absolute bg-white rounded-full h-10 shadow-md premium-tab-slider"
         style={sliderStyle}

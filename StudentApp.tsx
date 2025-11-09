@@ -333,6 +333,27 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, profile]);
 
+  useEffect(() => {
+    if (!session?.user) return;
+
+    const assignmentsChannel = supabase
+        .channel('public:assignments')
+        .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'assignments' },
+            (payload) => {
+                // RLS on assignments table means students only get notified for classrooms they are in.
+                // Re-fetching is the simplest way to update the list.
+                fetchAssignments();
+            }
+        )
+        .subscribe();
+
+    return () => {
+        supabase.removeChannel(assignmentsChannel);
+    };
+  }, [session, fetchAssignments]);
+
   const handleStartTest = (paper: Paper, assignmentId?: string) => {
     setViewState({ view: 'test', paper, assignmentId });
   };
