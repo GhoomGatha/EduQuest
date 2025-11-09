@@ -1,5 +1,6 @@
+
 import React, { useState, useMemo, ChangeEvent, useRef, useEffect, useCallback } from 'react';
-import { Paper, QuestionSource, Semester, UploadProgress, Language, Question } from '../types';
+import { Paper, QuestionSource, Semester, UploadProgress, Language, Question, Classroom } from '../types';
 import { t } from '../utils/localization';
 import Modal from './Modal';
 import { CLASSES, SEMESTERS, YEARS, BOARDS } from '../constants';
@@ -35,6 +36,7 @@ interface ExamArchiveProps {
   setViewingPaper: (paper: Paper | null) => void;
   userApiKey?: string;
   userOpenApiKey?: string;
+  onAssignPaper: (paper: Paper) => void;
 }
 
 const EXAM_ARCHIVE_CURRICULUM_KEY = 'eduquest_exam_archive_curriculum_prefs_v1';
@@ -79,7 +81,7 @@ interface IndividualFileProgress {
   status: 'pending' | 'uploading' | 'completed' | 'failed';
 }
 
-const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUploadPaper, onProcessPaper, lang, showToast, viewingPaper, setViewingPaper, userApiKey, userOpenApiKey }) => {
+const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUploadPaper, onProcessPaper, lang, showToast, viewingPaper, setViewingPaper, userApiKey, userOpenApiKey, onAssignPaper }) => {
   const [isUploadModalOpen, setUploadModalOpen] = useState(false);
   const [uploadData, setUploadData] = useState(getInitialUploadState);
   const [subjects, setSubjects] = useState<string[]>([]);
@@ -590,14 +592,17 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
         {/* Paper List */}
         <div className="divide-y divide-slate-100">
             {filteredAndPaginatedPapers.paginatedPapers.map(paper => (
-                <div key={paper.id} className="flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 transition-colors">
-                    <div>
-                        <p className="font-semibold text-slate-800">{paper.title}</p>
-                        <p className="text-sm text-slate-500">{t(paper.source, lang)} - {new Date(paper.created_at).toLocaleString()}</p>
-                    </div>
-                    <div className="space-x-3 flex-shrink-0">
-                        <button onClick={() => setViewingPaper(paper)} className="text-indigo-600 hover:text-indigo-800 text-sm font-semibold">{t('view', lang)}</button>
-                        <button onClick={() => onDeletePaper(paper.id)} className="text-red-600 hover:text-red-800 text-sm font-semibold">{t('delete', lang)}</button>
+                <div key={paper.id} className="p-3 rounded-lg hover:bg-slate-50 transition-colors group">
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <p className="font-semibold text-slate-800">{paper.title}</p>
+                            <p className="text-sm text-slate-500">{t(paper.source, lang)} - {new Date(paper.created_at).toLocaleString()}</p>
+                        </div>
+                        <div className="space-x-3 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button onClick={() => onAssignPaper(paper)} className="text-purple-600 hover:text-purple-800 text-sm font-semibold">Assign</button>
+                            <button onClick={() => setViewingPaper(paper)} className="text-indigo-600 hover:text-indigo-800 text-sm font-semibold">{t('view', lang)}</button>
+                            <button onClick={() => onDeletePaper(paper.id)} className="text-red-600 hover:text-red-800 text-sm font-semibold">{t('delete', lang)}</button>
+                        </div>
                     </div>
                 </div>
             ))}
@@ -751,7 +756,7 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
                     <div>
                         <label className="block text-sm font-medium text-slate-600">Semester</label>
                         <select value={uploadData.semester} onChange={(e) => setUploadData(prev => ({ ...prev, semester: e.target.value as Semester }))} className={inputStyles}>
-                            {SEMESTERS.map(s => <option key={s} value={s}>{`Sem ${s}`}</option>)}
+                            {SEMESTERS.map(s => <option key={s} value={s}>{`Sem ${s}`</option>)}
                         </select>
                     </div>
                 </div>

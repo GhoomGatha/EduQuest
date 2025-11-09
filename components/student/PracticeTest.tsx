@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Paper, Question, StudentAnswer, TestAttempt, QuestionSource } from '../../types';
 import { t } from '../../utils/localization';
@@ -13,7 +14,13 @@ interface PracticeTestProps {
 const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, onQuit }) => {
     const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
     const [studentAnswers, setStudentAnswers] = useState<Record<string, string>>({});
-    const [timeLeft, setTimeLeft] = useState(paper.questions.length * 90); // 1.5 minutes per question
+    const [timeLeft, setTimeLeft] = useState(() => {
+        if (paper.time_limit_minutes && paper.time_limit_minutes > 0) {
+            return paper.time_limit_minutes * 60;
+        }
+        return paper.questions.length * 90; // Default time
+    });
+    const hasTimeLimit = paper.time_limit_minutes !== undefined && paper.time_limit_minutes > 0;
     const [isQuitModalOpen, setQuitModalOpen] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -60,6 +67,8 @@ const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, on
     };
 
     useEffect(() => {
+        if (!hasTimeLimit) return; // Don't start timer if no time limit
+
         const timer = setInterval(() => {
             setTimeLeft(prev => {
                 if (prev <= 1) {
@@ -72,7 +81,7 @@ const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, on
         }, 1000);
         return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [hasTimeLimit]);
 
     const handleAnswerChange = (questionId: string, answer: string) => {
         setStudentAnswers(prev => ({ ...prev, [questionId]: answer }));
@@ -157,9 +166,15 @@ const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, on
             <header className="flex-shrink-0">
                 <div className="flex justify-between items-center mb-2">
                     <h1 className="text-lg font-bold text-slate-800 truncate pr-4">{paper.title}</h1>
-                    <div className="font-semibold text-indigo-600 bg-indigo-100 px-3 py-1 rounded-full text-sm">
-                       {t('timeRemaining', lang).replace('{time}', formatTime(timeLeft))}
-                    </div>
+                    {hasTimeLimit ? (
+                        <div className="font-semibold text-indigo-600 bg-indigo-100 px-3 py-1 rounded-full text-sm">
+                           {t('timeRemaining', lang).replace('{time}', formatTime(timeLeft))}
+                        </div>
+                    ) : (
+                        <div className="font-semibold text-green-600 bg-green-100 px-3 py-1 rounded-full text-sm">
+                           No Time Limit
+                        </div>
+                    )}
                 </div>
                 <div className="w-full bg-slate-200 rounded-full h-2.5">
                     <div className="bg-indigo-600 h-2.5 rounded-full" style={{ width: `${progress}%`, transition: 'width 0.3s ease' }}></div>

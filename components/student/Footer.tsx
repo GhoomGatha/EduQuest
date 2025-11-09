@@ -52,8 +52,8 @@ const Footer: React.FC<FooterProps> = ({ lang }) => {
 
   return (
     <>
-      <footer className="text-center py-4 text-sm text-slate-500 border-t border-green-200/40 bg-green-100/60 backdrop-blur-lg">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+      <footer className="text-center py-4 text-sm text-slate-500 border-t border-white/20 bg-green-200/50 backdrop-blur-xl">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-xs text-slate-400 mb-2 space-x-4">
                 <span><strong>Current Session:</strong> {sessionInfo.currentSessionStart}</span>
                 <span><strong>Last Login:</strong> {sessionInfo.lastLogin}</span>

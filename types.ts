@@ -1,5 +1,7 @@
 
 
+
+
 export enum Difficulty {
   Easy = 'Easy',
   Moderate = 'Moderate',
@@ -66,6 +68,7 @@ export interface Paper {
   grounding_sources?: GroundingSource[];
   board?: string;
   subject?: string;
+  time_limit_minutes?: number;
 }
 
 export type Role = 'teacher' | 'student';
@@ -79,7 +82,7 @@ export interface Profile {
 
 export type Language = 'en' | 'bn' | 'hi' | 'ka';
 
-export type Tab = 'bank' | 'generator' | 'ai_tutor' | 'archive' | 'settings' | 'test_papers';
+export type Tab = 'bank' | 'generator' | 'ai_tutor' | 'archive' | 'settings' | 'test_papers' | 'classroom';
 
 export interface ToastMessage {
   id: number;
@@ -88,7 +91,7 @@ export interface ToastMessage {
 }
 
 // Student-specific types
-export type StudentTab = 'dashboard' | 'results' | 'practice' | 'ai_tutor' | 'settings' | 'test_papers';
+export type StudentTab = 'dashboard' | 'results' | 'practice' | 'ai_tutor' | 'settings' | 'test_papers' | 'classroom';
 
 export interface StudentAnswer {
   questionId: string;
@@ -175,6 +178,7 @@ export type ViewState =
     | { view: 'ai_tutor' }
     | { view: 'settings' }
     | { view: 'test_papers' }
+    | { view: 'classroom' }
     | { view: 'test'; paper: Paper };
 
 // Unified type for activity feeds
@@ -210,4 +214,52 @@ export interface FinalExamPaper {
     };
     created_at: string;
     grounding_sources?: GroundingSource[];
+}
+
+// Classroom and Assignment types
+export interface Classroom {
+  id: string; // uuid
+  teacher_id: string; // uuid
+  name: string;
+  class_details: {
+    class: number;
+    subject: string;
+  };
+  invite_code: string;
+  created_at: string;
+  student_count?: number; // from an aggregate query
+  teacher_profile?: Profile;
+}
+
+export interface ClassroomStudent {
+  student_id: string;
+  joined_at: string;
+  profile: Profile;
+}
+
+export interface Assignment {
+  id: string; // uuid
+  paper_id: string;
+  paper_snapshot: Paper;
+  classroom_id: string;
+  teacher_id: string;
+  due_date: string;
+  time_limit_minutes: number;
+  created_at: string;
+}
+
+export interface StudentQuery {
+  id: string; // uuid
+  created_at: string;
+  student_id: string; // uuid
+  teacher_id: string; // uuid
+  classroom_id: string; // uuid
+  query_text: string;
+  query_image_url?: string;
+  status: 'asked' | 'answered';
+  answer_text?: string;
+  answered_at?: string;
+  // Joined data
+  student_profile?: Pick<Profile, 'full_name' | 'avatar_url'>;
+  classroom?: { name: string };
 }

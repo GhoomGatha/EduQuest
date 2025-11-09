@@ -13,6 +13,7 @@ interface NavProps {
 
 const tabIconAnimations: Record<StudentTab, string> = {
   dashboard: 'animate-glow',
+  classroom: 'animate-pulse',
   results: 'animate-sway',
   practice: 'animate-bobbing',
   ai_tutor: 'animate-glow',

@@ -48,6 +48,7 @@ const translations: Record<Language, Record<string, string>> = {
     'archive': 'Exam Archive',
     'settings': 'Settings',
     'test_papers': 'Test Papers',
+    'classroom': 'Classroom',
 
     // Question Fields
     'class': 'Class',
@@ -376,6 +377,7 @@ const translations: Record<Language, Record<string, string>> = {
     'ai_tutor': 'এআই টিউটর',
     'settings': 'সেটিংস',
     'test_papers': 'টেস্ট পেপার',
+    'classroom': 'শ্রেণীকক্ষ',
 
     'class': 'শ্রেণী',
     'chapter': 'অধ্যায়',
@@ -695,6 +697,7 @@ const translations: Record<Language, Record<string, string>> = {
     'ai_tutor': 'एआई ट्यूटर',
     'settings': 'सेटिंग्स',
     'test_papers': 'टेस्ट पेपर्स',
+    'classroom': 'कक्षा',
 
     'class': 'कक्षा',
     'chapter': 'अध्याय',
@@ -1012,6 +1015,7 @@ const translations: Record<Language, Record<string, string>> = {
     'archive': 'ಪರೀಕ್ಷಾ ಆರ್ಕೈವ್',
     'settings': 'ಸೆಟ್ಟಿಂಗ್‌ಗಳು',
     'test_papers': 'ಟೆಸ್ಟ್ ಪೇಪರ್‌ಗಳು',
+    'classroom': 'ತರಗತಿ',
     'class': 'ತರಗತಿ',
     'chapter': 'ಅಧ್ಯಾಯ',
     'questionText': 'ಪ್ರಶ್ನೆಯ ಪಠ್ಯ',

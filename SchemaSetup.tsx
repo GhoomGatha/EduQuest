@@ -12,8 +12,9 @@ const sqlScript = `-- EduQuest Supabase Schema Setup
 -- Storage Buckets: This part must be done manually in the Supabase Dashboard.
 -- 1. Go to Storage -> Buckets -> Create Bucket. Create a bucket named 'avatars', and check 'Public bucket'.
 -- 2. Create another bucket named 'question_images', and check 'Public bucket'.
--- 3. Create a third bucket named 'papers', and check 'Public bucket'. This is for the Exam Archive.
--- 4. Add the policies mentioned in the comments below to each bucket.
+-- 3. Create a third bucket named 'papers', and check 'Public bucket'.
+-- 4. Create a fourth bucket named 'query_images', and check 'Public bucket'.
+-- 5. Add the policies mentioned in the comments below to each bucket.
 
 -- Policy for 'avatars' bucket
 -- Name: "User can manage their own avatar folder."
@@ -44,6 +45,18 @@ const sqlScript = `-- EduQuest Supabase Schema Setup
 -- Applies to: INSERT, UPDATE, DELETE
 -- Target roles: authenticated
 -- USING expression: ( bucket_id = 'papers' AND (storage.foldername(name))[1] = auth.uid()::text )
+
+-- Policy for 'query_images' bucket (Public Read)
+-- Name: "Public read access for query images"
+-- Applies to: SELECT
+-- Target roles: anon, authenticated
+-- USING expression: ( bucket_id = 'query_images' )
+
+-- Policy for 'query_images' bucket (Student Write)
+-- Name: "Students can upload their own query images"
+-- Applies to: INSERT, UPDATE, DELETE
+-- Target roles: authenticated
+-- USING expression: ( bucket_id = 'query_images' AND (storage.foldername(name))[1] = auth.uid()::text )
 
 
 -- 1. PROFILES TABLE

@@ -137,15 +137,11 @@ const StudentSettings: React.FC<StudentSettingsProps> = ({
   
   const handleLogout = async () => {
     setIsLoggingOut(true);
-    
+
+    // The new logic in App.tsx handles login timestamps, so we just need to sign out.
+    // We can also clear the sessionStorage key as a cleanup step.
     if (session?.user?.id) {
         const currentSessionKey = `eduquest_current_session_start_${session.user.id}`;
-        const lastLoginKey = `eduquest_last_login_${session.user.id}`;
-        
-        const currentSessionStart = sessionStorage.getItem(currentSessionKey);
-        if (currentSessionStart) {
-            localStorage.setItem(lastLoginKey, currentSessionStart);
-        }
         sessionStorage.removeItem(currentSessionKey);
     }
 
@@ -156,9 +152,7 @@ const StudentSettings: React.FC<StudentSettingsProps> = ({
         showToast(`Logout failed: ${error.message}. Please try again.`, 'error');
         setIsLoggingOut(false);
     }
-    // No 'else' block is needed. The onAuthStateChange listener in the Auth context
-    // will detect the sign-out and automatically update the UI to show the login screen,
-    // which is more reliable than a full page reload.
+    // No 'else' is needed. The onAuthStateChange listener in App.tsx will handle the UI update.
   };
 
   const currentAvatar = avatarPreview || profile.avatar_url;

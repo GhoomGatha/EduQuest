@@ -15,6 +15,7 @@ export const BOARDS = ['WBBSE', 'WBCHSE', 'CBSE', 'ICSE', 'ISC'];
 
 export const TABS: { id: Tab; name: string; icon: string }[] = [
   { id: 'ai_tutor', name: 'AI Tutor', icon: '🧑‍🏫' },
+  { id: 'classroom', name: 'Classroom', icon: '🧑‍🎓' },
   { id: 'generator', name: 'Generator', icon: '🧾' },
   { id: 'archive', name: 'Archive', icon: '📚' },
   { id: 'bank', name: 'Question Bank', icon: '🧠' },
@@ -24,6 +25,7 @@ export const TABS: { id: Tab; name: string; icon: string }[] = [
 
 export const STUDENT_TABS: { id: StudentTab; name: string; icon: string }[] = [
   { id: 'dashboard', name: 'Dashboard', icon: '🏠' },
+  { id: 'classroom', name: 'My Classroom', icon: '🏫' },
   { id: 'ai_tutor', name: 'AI Tutor', icon: '🧑‍🏫' },
   { id: 'practice', name: 'Practice', icon: '✍️' },
   { id: 'test_papers', name: 'Test Papers', icon: '📜' },

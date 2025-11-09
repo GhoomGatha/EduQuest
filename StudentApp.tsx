@@ -1,10 +1,8 @@
-
-
 import React, { useState, useEffect, useCallback, lazy, Suspense, useMemo } from 'react';
 import { useAuth } from './hooks/useAuth';
 import { supabase } from './services/supabaseClient';
 // FIX: Import ViewState from the shared types file.
-import { Paper, TestAttempt, StudentTab, Language, Profile, Question, QuestionSource, Semester, Difficulty, TutorSession, ViewState, StudyMaterial, Flashcard } from './types';
+import { Paper, TestAttempt, StudentTab, Language, Profile, Question, QuestionSource, Semester, Difficulty, TutorSession, ViewState, StudyMaterial, Flashcard, Assignment, Classroom, StudentQuery } from './types';
 import { STUDENT_ATTEMPTS_KEY, API_KEY_STORAGE_KEY, LANGUAGE_STORAGE_KEY, OPENAI_API_KEY_STORAGE_KEY } from './constants';
 import { t } from './utils/localization';
 import LoadingSpinner from './components/LoadingSpinner';
@@ -21,6 +19,7 @@ const Settings = lazy(() => import('./components/student/Settings'));
 const PracticeZone = lazy(() => import('./components/student/PracticeZone'));
 const AITutor = lazy(() => import('./components/student/AITutor'));
 const FinalExamPapers = lazy(() => import('./components/FinalExamPapers'));
+const StudentClassroom = lazy(() => import('./components/student/StudentClassroom'));
 
 interface StudentAppProps {
   showToast: (message: string, type?: 'success' | 'error') => void;
@@ -95,8 +94,11 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   });
   
   const [papers, setPapers] = useState<Paper[]>([]);
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [attempts, setAttempts] = useState<TestAttempt[]>([]);
   const [tutorSessions, setTutorSessions] = useState<TutorSession[]>([]);
+  const [joinedClassrooms, setJoinedClassrooms] = useState<Classroom[]>([]);
+  const [studentQueries, setStudentQueries] = useState<StudentQuery[]>([]);
   const [loading, setLoading] = useState(true);
   const [lang, setLang] = useState<Language>('en');
   const [userApiKey, setUserApiKey] = useState<string>('');
@@ -125,7 +127,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
 
   useEffect(() => {
     // Persist the current main tab, but not transient states like 'test' or detailed views.
-    if (['dashboard', 'results', 'practice', 'ai_tutor', 'settings', 'test_papers'].includes(viewState.view)) {
+    if (['dashboard', 'results', 'practice', 'ai_tutor', 'settings', 'test_papers', 'classroom'].includes(viewState.view)) {
       if (viewState.view === 'results' && 'attemptId' in viewState && viewState.attemptId) {
         // Don't save if we are on a detailed result page.
       } else {
@@ -153,6 +155,72 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
         setPapers(data || []);
     }
   }, [showToast, profile]);
+  
+  const fetchAssignments = useCallback(async () => {
+    if (!session?.user) return;
+    // RLS policy ensures students only see assignments for classrooms they are in.
+    const { data, error } = await supabase.from('assignments').select('*');
+    if (error) {
+        showToast(`Failed to load assignments: ${error.message}`, 'error');
+    } else {
+        setAssignments(data || []);
+    }
+  }, [session, showToast]);
+
+    const fetchJoinedClassrooms = useCallback(async () => {
+        if (!session?.user) return;
+        
+        try {
+            // 1. Get classroom IDs student is part of
+            const { data: relations, error: relationsError } = await supabase
+                .from('classroom_students')
+                .select('classroom_id')
+                .eq('student_id', session.user.id);
+            
+            if (relationsError) throw relationsError;
+            if (!relations || relations.length === 0) {
+                setJoinedClassrooms([]);
+                return;
+            }
+            
+            const classroomIds = relations.map(r => r.classroom_id);
+            
+            // 2. Get classroom details for those IDs
+            const { data: classroomsData, error: classroomsError } = await supabase
+                .from('classrooms')
+                .select('*')
+                .in('id', classroomIds);
+                
+            if (classroomsError) throw classroomsError;
+            if (!classroomsData) {
+                setJoinedClassrooms([]);
+                return;
+            }
+
+            // 3. Get teacher profiles for those classrooms
+            const teacherIds = [...new Set(classroomsData.map(c => c.teacher_id))];
+            const { data: profilesData, error: profilesError } = await supabase
+                .from('profiles')
+                .select('*')
+                .in('id', teacherIds);
+            
+            if (profilesError) throw profilesError;
+
+            // 4. Combine data
+            const classroomsWithTeachers = classroomsData.map(classroom => {
+                const teacherProfile = profilesData?.find(p => p.id === classroom.teacher_id);
+                return {
+                    ...classroom,
+                    teacher_profile: teacherProfile
+                } as Classroom;
+            });
+            
+            setJoinedClassrooms(classroomsWithTeachers);
+
+        } catch (error: any) {
+            showToast(`Failed to load classrooms: ${error.message}`, 'error');
+        }
+    }, [session, showToast]);
 
   const fetchAttempts = useCallback(async () => {
     if (!session?.user) return [];
@@ -186,12 +254,26 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
     }
   }, [session, showToast]);
 
+  const fetchStudentQueries = useCallback(async () => {
+    if (!session?.user) return;
+    const { data, error } = await supabase
+      .from('student_queries')
+      .select('*, classroom:classrooms(name)')
+      .eq('student_id', session.user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      showToast(`Could not load your questions: ${error.message}`, 'error');
+    } else {
+      setStudentQueries(data as StudentQuery[]);
+    }
+  }, [session, showToast]);
 
   useEffect(() => {
     const loadData = async () => {
         setLoading(true);
         try {
-            await Promise.all([fetchPapers(), fetchTutorSessions()]);
+            await Promise.all([fetchPapers(), fetchTutorSessions(), fetchAssignments(), fetchJoinedClassrooms(), fetchStudentQueries()]);
             const dbAttempts = await fetchAttempts();
 
             // One-time migration from localStorage
@@ -478,7 +560,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   const getActiveTab = (): StudentTab => {
     if(viewState.view === 'test') return 'dashboard'; // Or 'practice'
     if(viewState.view === 'results' && viewState.attemptId) return 'results';
-    if (viewState.view === 'dashboard' || viewState.view === 'results' || viewState.view === 'settings' || viewState.view === 'practice' || viewState.view === 'ai_tutor' || viewState.view === 'test_papers') {
+    if (viewState.view === 'dashboard' || viewState.view === 'results' || viewState.view === 'settings' || viewState.view === 'practice' || viewState.view === 'ai_tutor' || viewState.view === 'test_papers' || viewState.view === 'classroom') {
         return viewState.view;
     }
     return 'dashboard';
@@ -503,7 +585,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
         <>
             <div style={{ display: currentView === 'dashboard' ? 'block' : 'none' }}>
                 <StudentDashboard 
-                    papers={papers} 
+                    papers={papers}
                     attempts={attempts} 
                     tutorSessions={tutorSessions}
                     lang={lang} 
@@ -514,6 +596,18 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
                     showToast={showToast}
                     setViewState={setViewState}
                     setViewingMaterial={setViewingMaterial}
+                />
+            </div>
+             <div style={{ display: currentView === 'classroom' ? 'block' : 'none' }}>
+                <StudentClassroom
+                    assignments={assignments}
+                    joinedClassrooms={joinedClassrooms}
+                    onRefreshClassrooms={fetchJoinedClassrooms}
+                    onStartTest={(paper) => setViewState({ view: 'test', paper })}
+                    lang={lang}
+                    showToast={showToast}
+                    queries={studentQueries}
+                    onRefreshQueries={fetchStudentQueries}
                 />
             </div>
             <div style={{ display: currentView === 'results' ? 'block' : 'none' }}>

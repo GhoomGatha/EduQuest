@@ -85,6 +85,13 @@ const App: React.FC = () => {
             handleSchemaError(tutorSessionsError);
             return;
         }
+        
+        // Check 5: 'assignments' table (for student classroom features)
+        const { error: assignmentsError } = await supabase.from('assignments').select('id').limit(1);
+        if (assignmentsError && (assignmentsError.code === '42P01' || assignmentsError.message.includes("does not exist"))) {
+            handleSchemaError(assignmentsError);
+            return;
+        }
 
 
         // If all checks pass
@@ -101,10 +108,25 @@ const App: React.FC = () => {
     useEffect(() => {
         if (session?.user?.id) {
             checkSchema(); // Initial check on app load.
-            // Set session start time on login/refresh
+    
             const currentSessionKey = `eduquest_current_session_start_${session.user.id}`;
+            const lastLoginKey = `eduquest_last_login_${session.user.id}`;
+    
+            // This effect runs on login and on every refresh. We only act if it's a new session.
             if (!sessionStorage.getItem(currentSessionKey)) {
-                sessionStorage.setItem(currentSessionKey, new Date().toISOString());
+                const now = new Date().toISOString();
+    
+                // The start time of the session that just ended (stored in localStorage) becomes the new "Last Login" time.
+                const previousSessionStart = localStorage.getItem(currentSessionKey);
+                if (previousSessionStart) {
+                    localStorage.setItem(lastLoginKey, previousSessionStart);
+                }
+    
+                // Store the start time of this new session for the *next* time the user logs in.
+                localStorage.setItem(currentSessionKey, now);
+    
+                // Also store it in sessionStorage to differentiate new sessions from page refreshes.
+                sessionStorage.setItem(currentSessionKey, now);
             }
         }
     }, [session, checkSchema]);

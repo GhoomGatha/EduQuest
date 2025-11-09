@@ -1,5 +1,6 @@
+
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { Paper, TestAttempt, PracticeSuggestion, QuestionSource, Semester, Question, Difficulty, StudyMaterial, Flashcard, ActivityItem, TutorSession, ViewState } from '../../types';
+import { Paper, TestAttempt, PracticeSuggestion, QuestionSource, Semester, Question, Difficulty, StudyMaterial, Flashcard, ActivityItem, TutorSession, ViewState, Assignment, Classroom, Language } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
 import { t } from '../../utils/localization';
 import { suggestPracticeSetsAI, generateQuestionsAI } from '../../services/geminiService';
@@ -313,7 +314,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ papers, attempts, l
                     lang={lang}
                 />
             )}
-
+            
             {!loadingSuggestions && suggestions.length > 0 && (
                 <section>
                     <h2 className="text-xl font-bold font-serif-display text-slate-700 mb-4">Suggested Practice</h2>
