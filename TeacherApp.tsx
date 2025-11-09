@@ -93,7 +93,7 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
   const [sessionInfo, setSessionInfo] = useState<{ lastLogin: string; currentSessionStart: string }>({ lastLogin: 'N/A', currentSessionStart: 'N/A' });
   const [viewingPaper, setViewingPaper] = useState<Paper | null>(null);
   const [viewingSession, setViewingSession] = useState<TutorSession | null>(null);
-  const [assigningPaper, setAssigningPaper] = useState<Paper | null>(null);
+  const [assignmentModalState, setAssignmentModalState] = useState<{ paper?: Paper; classroom?: Classroom } | null>(null);
 
 
   const allVisibleQuestions = useMemo(() => {
@@ -357,30 +357,39 @@ const handleSavePaper = async (paper: Paper) => {
     }
   };
   
-  const handleOpenAssignModal = (paper: Paper) => {
-      setAssigningPaper(paper);
-  };
+    const handleOpenAssignModalWithPaper = (paper: Paper) => {
+        setAssignmentModalState({ paper });
+    };
 
-  const handleAssignPaper = async ({ classroomId, dueDate, timeLimit }: { classroomId: string; dueDate: string; timeLimit: number }) => {
-      if (!assigningPaper || !session?.user) return;
-      const paperSnapshot = { ...assigningPaper, time_limit_minutes: timeLimit };
+    const handleOpenAssignModalWithClassroom = (classroom: Classroom) => {
+        setAssignmentModalState({ classroom });
+    };
 
-      const { error } = await supabase.from('assignments').insert({
-          paper_id: assigningPaper.id,
-          paper_snapshot: paperSnapshot,
-          classroom_id: classroomId,
-          teacher_id: session.user.id,
-          due_date: dueDate || null,
-          time_limit_minutes: timeLimit,
-      });
+    const handleAssignPaper = async ({ classroomId, paperId, dueDate, timeLimit }: { classroomId: string; paperId: string; dueDate: string; timeLimit: number }) => {
+        const paperToAssign = papers.find(p => p.id === paperId);
+        if (!paperToAssign || !session?.user) {
+            showToast("Could not find the selected paper to assign.", "error");
+            return;
+        }
+        
+        const paperSnapshot = { ...paperToAssign, time_limit_minutes: timeLimit };
 
-      if (error) {
-          showToast(`Error assigning paper: ${error.message}`, 'error');
-      } else {
-          showToast('Paper assigned successfully!', 'success');
-          setAssigningPaper(null);
-      }
-  };
+        const { error } = await supabase.from('assignments').insert({
+            paper_id: paperToAssign.id,
+            paper_snapshot: paperSnapshot,
+            classroom_id: classroomId,
+            teacher_id: session.user.id,
+            due_date: dueDate || null,
+            time_limit_minutes: timeLimit,
+        });
+
+        if (error) {
+            showToast(`Error assigning paper: ${error.message}`, 'error');
+        } else {
+            showToast('Paper assigned successfully!', 'success');
+            setAssignmentModalState(null);
+        }
+    };
 
   const onUploadPaper = async (paper: Paper, files: FileList, onProgress: (progress: UploadProgress | null) => void, options: { signal: AbortSignal }): Promise<Paper> => {
     if (!session?.user) throw new Error("User not authenticated");
@@ -549,9 +558,9 @@ const handleSavePaper = async (paper: Paper) => {
       case 'bank': return <QuestionBank questions={allVisibleQuestions} onAddQuestion={() => handleOpenModal()} onEditQuestion={handleOpenModal} onDeleteQuestion={handleDeleteQuestion} lang={lang} showToast={showToast} />;
       case 'generator': return <PaperGenerator questions={questions} onSavePaper={handleSavePaper} lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} />;
       case 'ai_tutor': return <AITutor lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} sessions={tutorSessions} onSaveResponse={handleSaveTutorResponse} onDeleteSession={handleDeleteSession} viewingSession={viewingSession} setViewingSession={setViewingSession} />;
-      case 'archive': return <ExamArchive papers={papers} onDeletePaper={handleDeletePaper} onUploadPaper={onUploadPaper} onProcessPaper={onProcessPaper} lang={lang} showToast={showToast} viewingPaper={viewingPaper} setViewingPaper={setViewingPaper} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} onAssignPaper={handleOpenAssignModal} />;
+      case 'archive': return <ExamArchive papers={papers} onDeletePaper={handleDeletePaper} onUploadPaper={onUploadPaper} onProcessPaper={onProcessPaper} lang={lang} showToast={showToast} viewingPaper={viewingPaper} setViewingPaper={setViewingPaper} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} onAssignPaper={handleOpenAssignModalWithPaper} />;
       case 'test_papers': return <FinalExamPapers lang={lang} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} showToast={showToast} onSavePaper={handleSavePaper} />;
-      case 'classroom': return <ClassroomComponent lang={lang} showToast={showToast} studentQueries={studentQueries} onRefreshQueries={fetchStudentQueries} />;
+      case 'classroom': return <ClassroomComponent lang={lang} showToast={showToast} studentQueries={studentQueries} onRefreshQueries={fetchStudentQueries} papers={papers} onAssignPaper={handleOpenAssignModalWithClassroom} />;
       case 'settings': return <Settings onExport={handleExportData} onImport={handleImportData} onClear={handleClearData} lang={lang} userApiKey={userApiKey} onSaveApiKey={handleSaveApiKey} onRemoveApiKey={handleRemoveApiKey} userOpenApiKey={userOpenApiKey} onSaveOpenApiKey={handleSaveOpenApiKey} onRemoveOpenApiKey={handleRemoveOpenApiKey} profile={profile!} onProfileUpdate={handleProfileUpdate} showToast={showToast} />;
       default: return null;
     }
@@ -617,7 +626,14 @@ const handleSavePaper = async (paper: Paper) => {
         <QuestionForm onSubmit={handleSaveQuestion} onCancel={() => setModalOpen(false)} initialData={editingQuestion} lang={lang} />
       </Modal>
 
-      <AssignPaperModal isOpen={!!assigningPaper} onClose={() => setAssigningPaper(null)} onSubmit={handleAssignPaper} classrooms={classrooms} paper={assigningPaper} />
+      <AssignPaperModal 
+        isOpen={!!assignmentModalState} 
+        onClose={() => setAssignmentModalState(null)} 
+        onSubmit={handleAssignPaper} 
+        classrooms={classrooms} 
+        papers={papers}
+        initialState={assignmentModalState}
+       />
       <SecretMessageModal isOpen={isSecretMessageOpen} onClose={() => setSecretMessageOpen(false)} />
     </>
   );

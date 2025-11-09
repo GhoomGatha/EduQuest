@@ -1,5 +1,6 @@
+
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Classroom, Language, Profile, ClassroomStudent, StudentQuery, Assignment } from '../types';
+import { Classroom, Language, Profile, ClassroomStudent, StudentQuery, Assignment, Paper } from '../types';
 import { t } from '../utils/localization';
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../services/supabaseClient';
@@ -12,13 +13,17 @@ interface ClassroomProps {
     showToast: (message: string, type?: 'success' | 'error') => void;
     studentQueries: StudentQuery[];
     onRefreshQueries: () => void;
+    papers: Paper[];
+    onAssignPaper: (classroom: Classroom) => void;
 }
 
 const generateInviteCode = () => Math.random().toString(36).substring(2, 8).toUpperCase();
 
-const ClassroomComponent: React.FC<ClassroomProps> = ({ lang, showToast, studentQueries, onRefreshQueries }) => {
+const ClassroomComponent: React.FC<ClassroomProps> = ({ lang, showToast, studentQueries, onRefreshQueries, papers, onAssignPaper }) => {
     const { user } = useAuth();
     const [classrooms, setClassrooms] = useState<Classroom[]>([]);
+    const [assignments, setAssignments] = useState<Assignment[]>([]);
+    const [loadingAssignments, setLoadingAssignments] = useState(true);
     const [isLoading, setIsLoading] = useState(true);
     const [selectedClassroom, setSelectedClassroom] = useState<Classroom | null>(null);
     const [students, setStudents] = useState<ClassroomStudent[]>([]);
@@ -44,9 +49,41 @@ const ClassroomComponent: React.FC<ClassroomProps> = ({ lang, showToast, student
         setIsLoading(false);
     }, [user, showToast]);
 
+    const fetchAssignments = useCallback(async () => {
+        if (!user) return;
+        setLoadingAssignments(true);
+        const { data, error } = await supabase
+            .from('assignments')
+            .select('*')
+            .eq('teacher_id', user.id);
+        if (error) {
+            showToast(`Error fetching assignments: ${error.message}`, 'error');
+        } else {
+            setAssignments(data || []);
+        }
+        setLoadingAssignments(false);
+    }, [user, showToast]);
+
     useEffect(() => {
         fetchClassrooms();
-    }, [fetchClassrooms]);
+        fetchAssignments();
+    }, [fetchClassrooms, fetchAssignments]);
+
+    useEffect(() => {
+        if (!user) return;
+        const channel = supabase.channel('public:assignments')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments', filter: `teacher_id=eq.${user.id}` }, 
+            (payload) => {
+                console.log('Assignment change detected, refetching.');
+                fetchAssignments();
+            })
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }, [user, fetchAssignments]);
+
 
     const handleViewClassroom = async (classroom: Classroom) => {
         setSelectedClassroom(classroom);
@@ -161,7 +198,19 @@ const ClassroomComponent: React.FC<ClassroomProps> = ({ lang, showToast, student
     };
 
     if (selectedClassroom) {
-        return <ClassroomDetailView classroom={selectedClassroom} students={students} isLoading={loadingStudents} onBack={() => setSelectedClassroom(null)} lang={lang} showToast={showToast} />;
+        const assignmentsForClassroom = assignments.filter(a => a.classroom_id === selectedClassroom.id);
+        return <ClassroomDetailView 
+                    classroom={selectedClassroom} 
+                    students={students} 
+                    isLoading={loadingStudents} 
+                    onBack={() => setSelectedClassroom(null)} 
+                    lang={lang} 
+                    showToast={showToast} 
+                    onAssignPaper={onAssignPaper} 
+                    assignments={assignmentsForClassroom}
+                    loadingAssignments={loadingAssignments}
+                    onRefreshAssignments={fetchAssignments}
+                />;
     }
 
     return (
@@ -264,6 +313,7 @@ const StudentQueriesList: React.FC<{ queries: StudentQuery[], onAnswerQuery: (qu
                            )}
                         </div>
                         <p className="mt-2 text-slate-700 ml-13 pl-1">{q.query_text}</p>
+                        {q.query_image_url && <img src={q.query_image_url} alt="Query" className="mt-2 ml-13 pl-1 max-w-xs rounded-md border" />}
                         {activeTab === 'answered' && q.answer_text && (
                             <div className="mt-2 ml-13 pl-1 pt-2 border-t border-slate-200">
                                 <p className="text-sm font-semibold text-green-700">Your Answer:</p>
@@ -286,31 +336,13 @@ interface ClassroomDetailViewProps {
     onBack: () => void;
     lang: Language;
     showToast: (message: string, type?: 'success' | 'error') => void;
+    onAssignPaper: (classroom: Classroom) => void;
+    assignments: Assignment[];
+    loadingAssignments: boolean;
+    onRefreshAssignments: () => void;
 }
 
-const ClassroomDetailView: React.FC<ClassroomDetailViewProps> = ({ classroom, students, isLoading, onBack, lang, showToast }) => {
-    const [assignments, setAssignments] = useState<Assignment[]>([]);
-    const [loadingAssignments, setLoadingAssignments] = useState(true);
-
-    const fetchAssignments = useCallback(async () => {
-        setLoadingAssignments(true);
-        const { data, error } = await supabase
-            .from('assignments')
-            .select('*')
-            .eq('classroom_id', classroom.id)
-            .order('created_at', { ascending: false });
-
-        if (error) {
-            showToast(`Error fetching assignments: ${error.message}`, 'error');
-        } else {
-            setAssignments(data || []);
-        }
-        setLoadingAssignments(false);
-    }, [classroom.id, showToast]);
-
-    useEffect(() => {
-        fetchAssignments();
-    }, [fetchAssignments]);
+const ClassroomDetailView: React.FC<ClassroomDetailViewProps> = ({ classroom, students, isLoading, onBack, lang, showToast, onAssignPaper, assignments, loadingAssignments, onRefreshAssignments }) => {
 
     const handleDeleteAssignment = async (assignmentId: string) => {
         if (window.confirm("Are you sure you want to cancel this assignment? This will remove it for all students.")) {
@@ -323,7 +355,7 @@ const ClassroomDetailView: React.FC<ClassroomDetailViewProps> = ({ classroom, st
                 showToast(`Error canceling assignment: ${error.message}`, 'error');
             } else {
                 showToast("Assignment canceled successfully.", 'success');
-                fetchAssignments(); // Refresh the list
+                // The subscription will handle the refresh
             }
         }
     };
@@ -359,7 +391,15 @@ const ClassroomDetailView: React.FC<ClassroomDetailViewProps> = ({ classroom, st
             </div>
             <div>
                  <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mt-11">
-                    <h2 className="text-2xl font-bold font-serif-display text-slate-800">Assignments</h2>
+                    <div className="flex justify-between items-center mb-1">
+                        <h2 className="text-2xl font-bold font-serif-display text-slate-800">Assignments</h2>
+                        <button 
+                            onClick={() => onAssignPaper(classroom)}
+                            className="flex items-center gap-2 px-3 py-2 bg-indigo-100 text-indigo-700 font-semibold rounded-lg hover:bg-indigo-200 transition-colors text-sm"
+                        >
+                           <span className="text-lg">➕</span> Assign New
+                        </button>
+                    </div>
                     <p className="text-slate-500">Papers assigned to this class.</p>
                     <div className="mt-4">
                         {loadingAssignments ? <p>Loading assignments...</p> : assignments.length > 0 ? (
