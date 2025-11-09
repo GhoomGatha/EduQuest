@@ -13,7 +13,8 @@ const sqlScript = `-- EduQuest Supabase Schema Setup
 -- 1. Go to Storage -> Buckets -> Create Bucket. Create a bucket named 'avatars', and check 'Public bucket'.
 -- 2. Create another bucket named 'question_images', and check 'Public bucket'.
 -- 3. Create a third bucket named 'papers', and check 'Public bucket'. This is for the Exam Archive.
--- 4. Add the policies mentioned in the comments below to each bucket.
+-- 4. Create a fourth bucket named 'query_images', and check 'Public bucket'.
+-- 5. Add the policies mentioned in the comments below to each bucket.
 
 -- Policy for 'avatars' bucket
 -- Name: "User can manage their own avatar folder."
@@ -44,6 +45,18 @@ const sqlScript = `-- EduQuest Supabase Schema Setup
 -- Applies to: INSERT, UPDATE, DELETE
 -- Target roles: authenticated
 -- USING expression: ( bucket_id = 'papers' AND (storage.foldername(name))[1] = auth.uid()::text )
+
+-- Policy for 'query_images' bucket (Public Read)
+-- Name: "Public read access for query images"
+-- Applies to: SELECT
+-- Target roles: anon, authenticated
+-- USING expression: ( bucket_id = 'query_images' )
+
+-- Policy for 'query_images' bucket (Student Write)
+-- Name: "Students can upload their own query images"
+-- Applies to: INSERT, UPDATE, DELETE
+-- Target roles: authenticated
+-- USING expression: ( bucket_id = 'query_images' AND (storage.foldername(name))[1] = auth.uid()::text )
 
 
 -- 1. PROFILES TABLE
@@ -461,6 +474,28 @@ CREATE POLICY "Students can manage their own queries." ON public.student_queries
 DROP POLICY IF EXISTS "Teachers can view and answer queries directed to them." ON public.student_queries;
 CREATE POLICY "Teachers can view and answer queries directed to them." ON public.student_queries
   FOR ALL USING (auth.uid() = teacher_id);
+
+-- 15. ASSIGNMENT SUBMISSIONS TABLE
+-- Stores student submissions for assignments.
+CREATE TABLE IF NOT EXISTS public.assignment_submissions (
+  id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+  created_at timestamptz DEFAULT now(),
+  assignment_id uuid NOT NULL REFERENCES public.assignments ON DELETE CASCADE,
+  student_id uuid NOT NULL REFERENCES public.profiles ON DELETE CASCADE,
+  teacher_id uuid NOT NULL REFERENCES public.profiles ON DELETE CASCADE, -- Denormalized from assignments table
+  attempt_data jsonb NOT NULL,
+  CONSTRAINT assignment_submissions_unique_student_assignment UNIQUE (assignment_id, student_id)
+);
+
+-- Enable RLS
+ALTER TABLE public.assignment_submissions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Students can manage their own submissions." ON public.assignment_submissions;
+CREATE POLICY "Students can manage their own submissions." ON public.assignment_submissions
+  FOR ALL USING (auth.uid() = student_id);
+  
+DROP POLICY IF EXISTS "Teachers can view submissions for their assignments." ON public.assignment_submissions;
+CREATE POLICY "Teachers can view submissions for their assignments." ON public.assignment_submissions
+  FOR SELECT USING (auth.uid() = teacher_id);
 `;
 
 const SchemaSetup: React.FC<SchemaSetupProps> = ({ onRetry, errorMessage }) => {

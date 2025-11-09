@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Assignment, Classroom, Language, Paper, StudentQuery } from '../../types';
+import { Assignment, Classroom, Language, Paper, StudentQuery, TestAttempt } from '../../types';
 import { t } from '../../utils/localization';
 import { useAuth } from '../../hooks/useAuth';
 import { supabase } from '../../services/supabaseClient';
@@ -117,9 +117,10 @@ const MyClassrooms: React.FC<{
 
 interface StudentClassroomProps {
     assignments: Assignment[];
+    attempts: TestAttempt[];
     joinedClassrooms: Classroom[];
     onRefreshClassrooms: () => void;
-    onStartTest: (paper: Paper) => void;
+    onStartTest: (paper: Paper, assignmentId: string) => void;
     lang: Language;
     showToast: (message: string, type?: 'success' | 'error') => void;
     queries: StudentQuery[];
@@ -128,6 +129,7 @@ interface StudentClassroomProps {
 
 const StudentClassroom: React.FC<StudentClassroomProps> = ({
     assignments,
+    attempts,
     joinedClassrooms,
     onRefreshClassrooms,
     onStartTest,
@@ -210,20 +212,28 @@ const StudentClassroom: React.FC<StudentClassroomProps> = ({
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                         {assignments.map(assignment => {
                             const paper = assignment.paper_snapshot;
+                            const isCompleted = attempts.some(attempt => attempt.assignmentId === assignment.id);
+                            
                             return (
-                                <div key={assignment.id} className="bg-white p-5 rounded-xl shadow-sm border-2 border-indigo-200 flex flex-col">
+                                <div key={assignment.id} className={`bg-white p-5 rounded-xl shadow-sm border-2 ${isCompleted ? 'border-green-300' : 'border-indigo-200'} flex flex-col`}>
                                     <h3 className="font-bold text-slate-800 flex-grow">{paper.title}</h3>
                                     <p className="text-sm text-slate-500 mt-1">{paper.questions.length} Questions</p>
                                     {assignment.due_date && <p className="text-xs text-red-500 font-medium mt-1">Due: {new Date(assignment.due_date).toLocaleString()}</p>}
                                     {paper.time_limit_minutes && paper.time_limit_minutes > 0 && (
                                         <p className="text-xs text-slate-500 font-medium mt-1">Time Limit: {paper.time_limit_minutes} minutes</p>
                                     )}
-                                    <button
-                                        onClick={() => onStartTest(paper)}
-                                        className="mt-4 w-full px-4 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm"
-                                    >
-                                        {t('startTest', lang)}
-                                    </button>
+                                    {isCompleted ? (
+                                        <div className="mt-4 w-full px-4 py-2.5 bg-green-100 text-green-700 font-semibold rounded-lg text-center">
+                                            ✓ Completed
+                                        </div>
+                                    ) : (
+                                        <button
+                                            onClick={() => onStartTest(paper, assignment.id)}
+                                            className="mt-4 w-full px-4 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 shadow-sm"
+                                        >
+                                            {t('startTest', lang)}
+                                        </button>
+                                    )}
                                 </div>
                             )
                         })}

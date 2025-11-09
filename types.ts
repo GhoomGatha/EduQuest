@@ -2,6 +2,7 @@
 
 
 
+
 export enum Difficulty {
   Easy = 'Easy',
   Moderate = 'Moderate',
@@ -117,6 +118,7 @@ export interface TestAttempt {
   semester: Semester;
   analysis?: Analysis;
   paper: Paper;
+  assignmentId?: string;
 }
 
 export interface Flashcard {
@@ -179,7 +181,7 @@ export type ViewState =
     | { view: 'settings' }
     | { view: 'test_papers' }
     | { view: 'classroom' }
-    | { view: 'test'; paper: Paper };
+    | { view: 'test'; paper: Paper; assignmentId?: string };
 
 // Unified type for activity feeds
 export type ActivityItem = {

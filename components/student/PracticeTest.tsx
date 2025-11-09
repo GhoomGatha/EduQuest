@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Paper, Question, StudentAnswer, TestAttempt, QuestionSource } from '../../types';
 import { t } from '../../utils/localization';
@@ -7,11 +6,12 @@ import Modal from '../Modal';
 interface PracticeTestProps {
     paper: Paper;
     lang: 'en' | 'bn' | 'hi';
-    onComplete: (attempt: TestAttempt) => void;
+    onComplete: (attempt: TestAttempt, assignmentId?: string) => void;
     onQuit: () => void;
+    assignmentId?: string;
 }
 
-const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, onQuit }) => {
+const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, onQuit, assignmentId }) => {
     const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
     const [studentAnswers, setStudentAnswers] = useState<Record<string, string>>({});
     const [timeLeft, setTimeLeft] = useState(() => {
@@ -59,9 +59,10 @@ const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, on
             year: paper.year,
             semester: paper.semester,
             paper: paper,
+            assignmentId: assignmentId,
         };
         
-        await (onComplete(attempt) as unknown as Promise<void>);
+        await (onComplete(attempt, assignmentId) as unknown as Promise<void>);
         
         setIsSubmitting(false);
     };

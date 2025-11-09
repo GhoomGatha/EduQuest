@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Classroom, Language, Profile, ClassroomStudent, StudentQuery } from '../types';
+import { Classroom, Language, Profile, ClassroomStudent, StudentQuery, Assignment } from '../types';
 import { t } from '../utils/localization';
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../services/supabaseClient';
@@ -161,7 +161,7 @@ const ClassroomComponent: React.FC<ClassroomProps> = ({ lang, showToast, student
     };
 
     if (selectedClassroom) {
-        return <ClassroomDetailView classroom={selectedClassroom} students={students} isLoading={loadingStudents} onBack={() => setSelectedClassroom(null)} lang={lang} />;
+        return <ClassroomDetailView classroom={selectedClassroom} students={students} isLoading={loadingStudents} onBack={() => setSelectedClassroom(null)} lang={lang} showToast={showToast} />;
     }
 
     return (
@@ -279,36 +279,120 @@ const StudentQueriesList: React.FC<{ queries: StudentQuery[], onAnswerQuery: (qu
     );
 };
 
+interface ClassroomDetailViewProps {
+    classroom: Classroom;
+    students: ClassroomStudent[];
+    isLoading: boolean;
+    onBack: () => void;
+    lang: Language;
+    showToast: (message: string, type?: 'success' | 'error') => void;
+}
 
-const ClassroomDetailView: React.FC<{ classroom: Classroom, students: ClassroomStudent[], isLoading: boolean, onBack: () => void, lang: Language }> = ({ classroom, students, isLoading, onBack, lang }) => (
-    <div className="p-4 sm:p-6">
-        <button onClick={onBack} className="text-indigo-600 font-semibold mb-4 flex items-center">
-            &larr; Back to All Classrooms
-        </button>
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-            <h2 className="text-2xl font-bold font-serif-display text-slate-800">{classroom.name}</h2>
-            <p className="text-slate-500">Student Roster</p>
+const ClassroomDetailView: React.FC<ClassroomDetailViewProps> = ({ classroom, students, isLoading, onBack, lang, showToast }) => {
+    const [assignments, setAssignments] = useState<Assignment[]>([]);
+    const [loadingAssignments, setLoadingAssignments] = useState(true);
 
-            <div className="mt-4">
-                {isLoading ? <p>Loading students...</p> : students.length > 0 ? (
-                    <ul className="divide-y divide-slate-200">
-                        {students.map(s => (
-                            <li key={s.student_id} className="py-3 flex items-center">
-                                <img src={s.profile.avatar_url || `https://api.dicebear.com/8.x/initials/svg?seed=${s.profile.full_name}`} alt={s.profile.full_name} className="h-10 w-10 rounded-full object-cover mr-4" />
-                                <div>
-                                    <p className="font-semibold text-slate-800">{s.profile.full_name}</p>
-                                    <p className="text-xs text-slate-500">Joined on: {new Date(s.joined_at).toLocaleDateString()}</p>
-                                </div>
-                            </li>
-                        ))}
-                    </ul>
-                ) : (
-                    <p className="text-center text-slate-500 p-8">No students have joined this classroom yet.</p>
-                )}
+    const fetchAssignments = useCallback(async () => {
+        setLoadingAssignments(true);
+        const { data, error } = await supabase
+            .from('assignments')
+            .select('*')
+            .eq('classroom_id', classroom.id)
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            showToast(`Error fetching assignments: ${error.message}`, 'error');
+        } else {
+            setAssignments(data || []);
+        }
+        setLoadingAssignments(false);
+    }, [classroom.id, showToast]);
+
+    useEffect(() => {
+        fetchAssignments();
+    }, [fetchAssignments]);
+
+    const handleDeleteAssignment = async (assignmentId: string) => {
+        if (window.confirm("Are you sure you want to cancel this assignment? This will remove it for all students.")) {
+            const { error } = await supabase
+                .from('assignments')
+                .delete()
+                .eq('id', assignmentId);
+
+            if (error) {
+                showToast(`Error canceling assignment: ${error.message}`, 'error');
+            } else {
+                showToast("Assignment canceled successfully.", 'success');
+                fetchAssignments(); // Refresh the list
+            }
+        }
+    };
+    
+    return (
+        <div className="p-4 sm:p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+                <button onClick={onBack} className="text-indigo-600 font-semibold mb-4 flex items-center">
+                    &larr; Back to All Classrooms
+                </button>
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                    <h2 className="text-2xl font-bold font-serif-display text-slate-800">{classroom.name}</h2>
+                    <p className="text-slate-500">Student Roster</p>
+
+                    <div className="mt-4">
+                        {isLoading ? <p>Loading students...</p> : students.length > 0 ? (
+                            <ul className="divide-y divide-slate-200 max-h-96 overflow-y-auto">
+                                {students.map(s => (
+                                    <li key={s.student_id} className="py-3 flex items-center">
+                                        <img src={s.profile.avatar_url || `https://api.dicebear.com/8.x/initials/svg?seed=${s.profile.full_name}`} alt={s.profile.full_name} className="h-10 w-10 rounded-full object-cover mr-4" />
+                                        <div>
+                                            <p className="font-semibold text-slate-800">{s.profile.full_name}</p>
+                                            <p className="text-xs text-slate-500">Joined on: {new Date(s.joined_at).toLocaleDateString()}</p>
+                                        </div>
+                                    </li>
+                                ))}
+                            </ul>
+                        ) : (
+                            <p className="text-center text-slate-500 p-8">No students have joined this classroom yet.</p>
+                        )}
+                    </div>
+                </div>
+            </div>
+            <div>
+                 <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mt-11">
+                    <h2 className="text-2xl font-bold font-serif-display text-slate-800">Assignments</h2>
+                    <p className="text-slate-500">Papers assigned to this class.</p>
+                    <div className="mt-4">
+                        {loadingAssignments ? <p>Loading assignments...</p> : assignments.length > 0 ? (
+                            <div className="space-y-3 max-h-[28rem] overflow-y-auto pr-2">
+                                {assignments.map(assignment => (
+                                    <div key={assignment.id} className="p-3 bg-slate-50 rounded-lg border">
+                                        <div className="flex justify-between items-start">
+                                            <div>
+                                                <h4 className="font-bold text-slate-800">{assignment.paper_snapshot.title}</h4>
+                                                <p className="text-xs text-slate-500">Assigned on: {new Date(assignment.created_at).toLocaleDateString()}</p>
+                                                {assignment.due_date && <p className="text-xs text-red-500 font-medium">Due: {new Date(assignment.due_date).toLocaleString()}</p>}
+                                            </div>
+                                            <div className="flex-shrink-0 ml-4">
+                                                <button
+                                                    onClick={() => handleDeleteAssignment(assignment.id)}
+                                                    className="text-sm font-semibold text-red-600 hover:text-red-800"
+                                                >
+                                                    Cancel
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                             <p className="text-center text-slate-500 p-8">No assignments for this classroom yet.</p>
+                        )}
+                    </div>
+                </div>
             </div>
         </div>
-    </div>
-);
+    );
+};
 
 const CreateClassroomForm: React.FC<{ onSubmit: (name: string, classNum: number, subject: string) => void, onCancel: () => void }> = ({ onSubmit, onCancel }) => {
     const [name, setName] = useState('');

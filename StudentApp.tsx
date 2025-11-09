@@ -333,29 +333,67 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, profile]);
 
+  const handleStartTest = (paper: Paper, assignmentId?: string) => {
+    setViewState({ view: 'test', paper, assignmentId });
+  };
 
-  const handleTestComplete = async (attempt: TestAttempt) => {
+  const handleTestComplete = async (attempt: TestAttempt, assignmentId?: string) => {
     if (!session?.user) {
         showToast("You must be logged in to save results.", 'error');
         return;
     }
-    const { db_id, ...attemptData } = attempt;
-    const { data, error } = await supabase
-        .from('student_test_attempts')
-        .insert({ user_id: session.user.id, attempt_data: attemptData })
-        .select('id, attempt_data')
-        .single();
     
-    if (error || !data) {
-        console.error("Error saving test attempt:", error?.message || error);
-        showToast("Could not save your test results.", 'error');
-        setAttempts(prev => [attempt, ...prev]); // Fallback to local state for this session
-    } else {
-        const savedAttemptWithId = { ...data.attempt_data, db_id: data.id };
-        setAttempts(prev => [savedAttemptWithId, ...prev]);
+    let savedAttempt = attempt; // Use the local attempt as a fallback
+
+    try {
+        // Always save to the student's personal attempts history
+        const { db_id, ...attemptData } = attempt;
+        const { data, error: attemptError } = await supabase
+            .from('student_test_attempts')
+            .insert({ user_id: session.user.id, attempt_data: attemptData })
+            .select('id, attempt_data')
+            .single();
+
+        if (attemptError || !data) {
+            throw attemptError || new Error("Failed to save test attempt.");
+        }
+        
+        savedAttempt = { ...data.attempt_data, db_id: data.id };
+        setAttempts(prev => [savedAttempt, ...prev]);
         showToast('Test submitted successfully!', 'success');
+
+        // If it's an assignment, also save it to the submissions table for the teacher
+        if (assignmentId) {
+            const assignment = assignments.find(a => a.id === assignmentId);
+            if (!assignment) {
+                showToast("Could not find assignment details to notify teacher.", 'error');
+            } else {
+                const { error: submissionError } = await supabase.from('assignment_submissions').upsert({
+                    assignment_id: assignmentId,
+                    student_id: session.user.id,
+                    teacher_id: assignment.teacher_id,
+                    attempt_data: attempt // The whole attempt object
+                }, {
+                    onConflict: 'assignment_id, student_id'
+                });
+
+                if (submissionError) {
+                    console.error("Error saving assignment submission:", submissionError.message, submissionError);
+                    showToast(`Your result was saved, but notifying the teacher failed: ${submissionError.message}`, 'error');
+                } else {
+                    showToast("Your teacher has been notified of your submission.", 'success');
+                }
+            }
+        }
+    } catch (error: any) {
+        console.error("Error during test completion:", error.message, error);
+        showToast(`Could not save your test results: ${error.message}`, 'error');
+        // Fallback to local state for this session
+        setAttempts(prev => [attempt, ...prev]);
+    } finally {
+        // This ensures navigation happens even if saving fails
+        setViewState({ view: 'results', attemptId: savedAttempt.paperId + savedAttempt.completedAt });
     }
-    setViewState({ view: 'results', attemptId: attempt.paperId + attempt.completedAt });
   };
   
   const handleProfileUpdate = async (updatedProfile: Profile, avatarFile?: File) => {
@@ -577,6 +615,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
                     lang={lang} 
                     onComplete={handleTestComplete} 
                     onQuit={() => setViewState({ view: 'dashboard' })}
+                    assignmentId={viewState.assignmentId}
                 />;
     }
 
@@ -589,7 +628,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
                     attempts={attempts} 
                     tutorSessions={tutorSessions}
                     lang={lang} 
-                    onStartTest={(paper) => setViewState({ view: 'test', paper })}
+                    onStartTest={handleStartTest}
                     onViewResult={(attempt) => setViewState({ view: 'results', attemptId: attempt.paperId + attempt.completedAt })}
                     userApiKey={userApiKey}
                     userOpenApiKey={userOpenApiKey}
@@ -601,9 +640,10 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
              <div style={{ display: currentView === 'classroom' ? 'block' : 'none' }}>
                 <StudentClassroom
                     assignments={assignments}
+                    attempts={attempts}
                     joinedClassrooms={joinedClassrooms}
                     onRefreshClassrooms={fetchJoinedClassrooms}
-                    onStartTest={(paper) => setViewState({ view: 'test', paper })}
+                    onStartTest={handleStartTest}
                     lang={lang}
                     showToast={showToast}
                     queries={studentQueries}
@@ -618,7 +658,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
                     initialAttemptId={viewState.view === 'results' ? viewState.attemptId : undefined}
                     onUpdateAttempt={handleUpdateAttempt}
                     onNavigateBack={() => setViewState({ view: 'results' })}
-                    onStartTest={(paper) => setViewState({ view: 'test', paper })}
+                    onStartTest={handleStartTest}
                     onGoToDashboard={() => setViewState({ view: 'dashboard' })}
                     userApiKey={userApiKey}
                     userOpenApiKey={userOpenApiKey}

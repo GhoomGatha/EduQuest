@@ -276,8 +276,8 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
   
 const handleSavePaper = async (paper: Paper) => {
     const { id: localPaperId, ...paperData } = paper;
-    const paperToSave = { ...paperData, user_id: session!.user.id };
     
+    // Prepare questions for 'questions' table
     const newQuestionsFromPaper = paper.questions
         .filter(q => q.source === QuestionSource.Generated || q.source === QuestionSource.Scan)
         .map(q => {
@@ -285,25 +285,37 @@ const handleSavePaper = async (paper: Paper) => {
             return { ...questionData, user_id: session!.user.id };
         });
 
+    // Prepare paper for 'papers' table
+    const paperToSave = { ...paperData, user_id: session!.user.id };
+
+    // --- FIX START ---
+    // Reorder operations: Save questions first, then the paper.
+    // This makes error reporting more direct if a specific part fails (e.g., questions with large images).
+    
+    // 1. Save new questions to the Question Bank
+    if (newQuestionsFromPaper.length > 0) {
+        const { error: questionsError } = await supabase.from('questions').insert(newQuestionsFromPaper);
+        if (questionsError) {
+            showToast(`Failed to add new questions to bank: ${questionsError.message}`, 'error');
+            return; // Stop if questions can't be saved
+        }
+    }
+    
+    // 2. Save the paper to the Exam Archive
     const { error: paperError } = await supabase.from('papers').insert(paperToSave);
     if (paperError) {
         showToast(`Error saving paper to archive: ${paperError.message}`, 'error');
+        // Note: Questions were saved, but the paper wrapper failed.
         return;
     }
 
-    let questionsError = null;
+    // 3. Show success message
     if (newQuestionsFromPaper.length > 0) {
-        const { error } = await supabase.from('questions').insert(newQuestionsFromPaper);
-        questionsError = error;
-    }
-
-    if (questionsError) {
-        showToast(`Paper saved, but failed to add new questions to bank: ${questionsError.message}`, 'error');
-    } else if (newQuestionsFromPaper.length > 0) {
         showToast(t('paperGeneratedWithQuestions', lang).replace('{count}', String(newQuestionsFromPaper.length)), 'success');
     } else {
         showToast(t('paperSavedToArchive', lang), 'success');
     }
+    // --- FIX END ---
 };
 
   const handleDeletePaper = async (id: string) => {
@@ -407,7 +419,7 @@ const handleSavePaper = async (paper: Paper) => {
                 used_in: [], source: QuestionSource.Scan, year: paper.year, semester: paper.semester, tags: [], created_at: new Date().toISOString(),
             }));
 
-            await supabase.from('questions').insert(extractedQuestions.map(q => ({ ...q, user_id: session.user!.id })));
+            await supabase.from('questions').insert(extractedQuestions.map(q => ({ ...q, user_id: session!.user!.id })));
             await supabase.from('papers').update({ questions: extractedQuestions }).eq('id', paper.id);
 
             showToast(t('paperGeneratedWithQuestions', lang).replace('{count}', String(extractedQuestions.length)));
@@ -517,7 +529,7 @@ const handleSavePaper = async (paper: Paper) => {
   return (
     <>
       <header className="bg-green-200/50 backdrop-blur-xl shadow-sm sticky top-0 z-40 border-b border-white/30">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="flex justify-between items-center py-4">
               <div>
                 <h1 className="text-2xl font-bold text-slate-900 equipment-title-container">
@@ -549,14 +561,14 @@ const handleSavePaper = async (paper: Paper) => {
         </div>
       </header>
       
-      <main className="flex-grow max-w-4xl mx-auto w-full">
+      <main className="flex-grow max-w-7xl mx-auto w-full">
         <Suspense fallback={<LoadingSpinner message={t('loading', lang)} />}>
           {renderContent()}
         </Suspense>
       </main>
 
       <footer className="text-center py-4 text-sm text-slate-500 border-t border-white/20 bg-green-200/50 backdrop-blur-xl">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-xs text-slate-400 mb-2 space-x-4">
                 <span><strong>Current Session:</strong> {sessionInfo.currentSessionStart}</span>
                 <span><strong>Last Login:</strong> {sessionInfo.lastLogin}</span>

@@ -474,6 +474,28 @@ CREATE POLICY "Students can manage their own queries." ON public.student_queries
 DROP POLICY IF EXISTS "Teachers can view and answer queries directed to them." ON public.student_queries;
 CREATE POLICY "Teachers can view and answer queries directed to them." ON public.student_queries
   FOR ALL USING (auth.uid() = teacher_id);
+
+-- 15. ASSIGNMENT SUBMISSIONS TABLE
+-- Stores student submissions for assignments.
+CREATE TABLE IF NOT EXISTS public.assignment_submissions (
+  id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+  created_at timestamptz DEFAULT now(),
+  assignment_id uuid NOT NULL REFERENCES public.assignments ON DELETE CASCADE,
+  student_id uuid NOT NULL REFERENCES public.profiles ON DELETE CASCADE,
+  teacher_id uuid NOT NULL REFERENCES public.profiles ON DELETE CASCADE, -- Denormalized from assignments table
+  attempt_data jsonb NOT NULL,
+  CONSTRAINT assignment_submissions_unique_student_assignment UNIQUE (assignment_id, student_id)
+);
+
+-- Enable RLS
+ALTER TABLE public.assignment_submissions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Students can manage their own submissions." ON public.assignment_submissions;
+CREATE POLICY "Students can manage their own submissions." ON public.assignment_submissions
+  FOR ALL USING (auth.uid() = student_id);
+  
+DROP POLICY IF EXISTS "Teachers can view submissions for their assignments." ON public.assignment_submissions;
+CREATE POLICY "Teachers can view submissions for their assignments." ON public.assignment_submissions
+  FOR SELECT USING (auth.uid() = teacher_id);
 `;
 
 const SchemaSetup: React.FC<SchemaSetupProps> = ({ onRetry, errorMessage }) => {
