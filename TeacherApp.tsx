@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useCallback, useRef, lazy, Suspense, useMemo } from 'react';
 import { Question, Paper, Tab, Language, Profile, QuestionSource, Difficulty, Semester, UploadProgress, TutorSession, Classroom, StudentQuery } from './types';
 import { t } from './utils/localization';
@@ -275,47 +276,77 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
   };
   
 const handleSavePaper = async (paper: Paper) => {
-    const { id: localPaperId, ...paperData } = paper;
-    
-    // Prepare questions for 'questions' table
-    const newQuestionsFromPaper = paper.questions
-        .filter(q => q.source === QuestionSource.Generated || q.source === QuestionSource.Scan)
-        .map(q => {
-            const { id: localQuestionId, ...questionData } = q; 
-            return { ...questionData, user_id: session!.user.id };
-        });
-
-    // Prepare paper for 'papers' table
-    const paperToSave = { ...paperData, user_id: session!.user.id };
-
-    // --- FIX START ---
-    // Reorder operations: Save questions first, then the paper.
-    // This makes error reporting more direct if a specific part fails (e.g., questions with large images).
-    
-    // 1. Save new questions to the Question Bank
-    if (newQuestionsFromPaper.length > 0) {
-        const { error: questionsError } = await supabase.from('questions').insert(newQuestionsFromPaper);
-        if (questionsError) {
-            showToast(`Failed to add new questions to bank: ${questionsError.message}`, 'error');
-            return; // Stop if questions can't be saved
-        }
+    if (!session?.user) {
+        showToast("You must be logged in to save.", "error");
+        return;
     }
     
-    // 2. Save the paper to the Exam Archive
-    const { error: paperError } = await supabase.from('papers').insert(paperToSave);
+    const { id: localPaperId, ...paperData } = paper;
+    
+    // 1. Identify new questions (with temporary IDs) and existing questions
+    const newQuestionsFromPaper = paper.questions.filter(q => q.id.startsWith('gen-'));
+    const existingQuestionsFromPaper = paper.questions.filter(q => !q.id.startsWith('gen-'));
+    
+    let savedNewQuestions: Question[] = [];
+
+    if (newQuestionsFromPaper.length > 0) {
+        const questionsToInsert = newQuestionsFromPaper.map(q => {
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const { id, ...questionData } = q; 
+            return { ...questionData, user_id: session.user.id };
+        });
+
+        // Insert new questions and get them back with their database IDs
+        const { data: newQuestionsData, error: questionsError } = await supabase
+            .from('questions')
+            .insert(questionsToInsert)
+            .select();
+
+        if (questionsError) {
+            showToast(`Failed to add new questions to bank: ${questionsError.message}`, 'error');
+            return;
+        }
+        savedNewQuestions = newQuestionsData || [];
+    }
+    
+    // 2. Prepare the final paper object with all questions having real database IDs
+    const finalPaperQuestions = [...existingQuestionsFromPaper, ...savedNewQuestions];
+    
+    const paperToSave = { 
+        ...paperData, 
+        user_id: session.user.id,
+        questions: finalPaperQuestions 
+    };
+
+    // 3. Save the paper to the Exam Archive
+    const { data: savedPaperData, error: paperError } = await supabase
+        .from('papers')
+        .insert(paperToSave)
+        .select()
+        .single();
+
     if (paperError) {
         showToast(`Error saving paper to archive: ${paperError.message}`, 'error');
-        // Note: Questions were saved, but the paper wrapper failed.
+        if (savedNewQuestions.length > 0) {
+            setQuestions(prev => [...savedNewQuestions, ...prev]);
+        }
         return;
     }
 
-    // 3. Show success message
-    if (newQuestionsFromPaper.length > 0) {
-        showToast(t('paperGeneratedWithQuestions', lang).replace('{count}', String(newQuestionsFromPaper.length)), 'success');
+    // 4. Update local state for immediate UI refresh
+    if (savedNewQuestions.length > 0) {
+        setQuestions(prev => [...savedNewQuestions, ...prev]);
+    }
+    if (savedPaperData) {
+        setPapers(prev => [savedPaperData as Paper, ...prev]);
+    }
+
+    // 5. Show appropriate success message
+    if (savedNewQuestions.length > 0) {
+        showToast(t('paperGeneratedWithQuestions', lang).replace('{count}', String(savedNewQuestions.length)), 'success');
     } else {
         showToast(t('paperSavedToArchive', lang), 'success');
     }
-    // --- FIX END ---
 };
 
   const handleDeletePaper = async (id: string) => {
