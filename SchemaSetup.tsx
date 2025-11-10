@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 
 interface SchemaSetupProps {
@@ -12,7 +13,7 @@ const sqlScript = `-- EduQuest Supabase Schema Setup
 -- Storage Buckets: This part must be done manually in the Supabase Dashboard.
 -- 1. Go to Storage -> Buckets -> Create Bucket. Create a bucket named 'avatars', and check 'Public bucket'.
 -- 2. Create another bucket named 'question_images', and check 'Public bucket'.
--- 3. Create a third bucket named 'papers', and check 'Public bucket'.
+-- 3. Create a third bucket named 'papers', and check 'Public bucket'. This is for the Exam Archive.
 -- 4. Create a fourth bucket named 'query_images', and check 'Public bucket'.
 -- 5. Add the policies mentioned in the comments below to each bucket.
 
@@ -158,10 +159,14 @@ ALTER TABLE public.papers ADD COLUMN IF NOT EXISTS board text;
 ALTER TABLE public.papers ADD COLUMN IF NOT EXISTS subject text;
 
 
--- Enable RLS for papers and create policy
+-- Enable RLS for papers and create policies
 ALTER TABLE public.papers ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Users can manage their own papers." ON public.papers;
-CREATE POLICY "Users can manage their own papers." ON public.papers FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can create, update, delete own papers." ON public.papers;
+CREATE POLICY "Users can create, update, delete own papers." ON public.papers FOR INSERT, UPDATE, DELETE USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Authenticated users can view all papers." ON public.papers;
+CREATE POLICY "Authenticated users can view all papers." ON public.papers FOR SELECT USING (auth.role() = 'authenticated');
+
 
 -- 5. STUDENT TEST ATTEMPTS TABLE
 -- Stores all test attempts by students.

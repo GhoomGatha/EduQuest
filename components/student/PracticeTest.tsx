@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Paper, Question, StudentAnswer, TestAttempt, QuestionSource } from '../../types';
 import { t } from '../../utils/localization';
@@ -30,41 +31,43 @@ const PracticeTest: React.FC<PracticeTestProps> = ({ paper, lang, onComplete, on
         if (isSubmitting) return;
         setIsSubmitting(true);
     
-        let score = 0;
-        const totalMarks = paper.questions.reduce((acc, q) => acc + q.marks, 0);
-        const finalAnswers: StudentAnswer[] = [];
-        
-        const isPractice = paper.id.startsWith('practice-') || paper.id.startsWith('suggested-practice-') || paper.id.startsWith('mcq-') || paper.id.startsWith('scan-');
-    
-        paper.questions.forEach(q => {
-            const studentAnswer = studentAnswers[q.id]?.trim() || '';
-            finalAnswers.push({ questionId: q.id, answer: studentAnswer });
+        try {
+            let score = 0;
+            const totalMarks = paper.questions.reduce((acc, q) => acc + q.marks, 0);
+            const finalAnswers: StudentAnswer[] = [];
             
-            if (!isPractice) {
-                const correctAnswer = q.answer?.trim() || '';
-                if (correctAnswer && studentAnswer.toLowerCase() === correctAnswer.toLowerCase()) {
-                    score += q.marks;
+            const isPractice = paper.id.startsWith('practice-') || paper.id.startsWith('suggested-practice-') || paper.id.startsWith('mcq-') || paper.id.startsWith('scan-');
+        
+            paper.questions.forEach(q => {
+                const studentAnswer = studentAnswers[q.id]?.trim() || '';
+                finalAnswers.push({ questionId: q.id, answer: studentAnswer });
+                
+                if (!isPractice) {
+                    const correctAnswer = q.answer?.trim() || '';
+                    if (correctAnswer && studentAnswer.toLowerCase() === correctAnswer.toLowerCase()) {
+                        score += q.marks;
+                    }
                 }
-            }
-        });
-    
-        const attempt: TestAttempt = {
-            paperId: paper.id,
-            paperTitle: paper.title,
-            studentAnswers: finalAnswers,
-            score: isPractice ? -1 : score,
-            totalMarks: isPractice ? -1 : totalMarks,
-            completedAt: new Date().toISOString(),
-            class: paper.class,
-            year: paper.year,
-            semester: paper.semester,
-            paper: paper,
-            assignmentId: assignmentId,
-        };
+            });
         
-        await (onComplete(attempt, assignmentId) as unknown as Promise<void>);
-        
-        setIsSubmitting(false);
+            const attempt: TestAttempt = {
+                paperId: paper.id,
+                paperTitle: paper.title,
+                studentAnswers: finalAnswers,
+                score: isPractice ? -1 : score,
+                totalMarks: isPractice ? -1 : totalMarks,
+                completedAt: new Date().toISOString(),
+                class: paper.class,
+                year: paper.year,
+                semester: paper.semester,
+                paper: paper,
+                assignmentId: assignmentId,
+            };
+            
+            await onComplete(attempt, assignmentId);
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     useEffect(() => {

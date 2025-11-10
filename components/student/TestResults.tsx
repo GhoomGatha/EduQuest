@@ -1,5 +1,4 @@
-
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { TestAttempt, Paper, StudentAnswer, Question, QuestionSource } from '../../types';
 import { t } from '../../utils/localization';
 import { analyzeTestAttempt, coachLongAnswerAI } from '../../services/geminiService';
@@ -18,9 +17,20 @@ interface TestResultsProps {
 }
 
 const TestResults: React.FC<TestResultsProps> = ({ attempts, papers, lang, initialAttemptId, onUpdateAttempt, onNavigateBack, onStartTest, onGoToDashboard, userApiKey, userOpenApiKey }) => {
-    const [selectedAttempt, setSelectedAttempt] = useState<TestAttempt | null>(() => {
-        return attempts.find(a => (a.paperId + a.completedAt) === initialAttemptId) || null;
-    });
+    const [selectedAttempt, setSelectedAttempt] = useState<TestAttempt | null>(null);
+
+    useEffect(() => {
+        // This effect syncs the displayed attempt with the props.
+        // It selects the correct attempt when initialAttemptId is provided,
+        // and also picks up updates to the attempts array (e.g., after fetching AI analysis).
+        if (initialAttemptId) {
+            const attemptFromProps = attempts.find(a => a.db_id === initialAttemptId);
+            setSelectedAttempt(attemptFromProps || null);
+        } else {
+            // When navigating back to the list view, clear the selection.
+            setSelectedAttempt(null);
+        }
+    }, [initialAttemptId, attempts]);
 
     const paperForSelectedAttempt = useMemo(() => {
         if (!selectedAttempt) return null;
@@ -34,7 +44,7 @@ const TestResults: React.FC<TestResultsProps> = ({ attempts, papers, lang, initi
 
 
     const handleBack = () => {
-        setSelectedAttempt(null);
+        // The useEffect will clear the selectedAttempt when the parent updates the initialAttemptId prop.
         onNavigateBack();
     }
 

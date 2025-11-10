@@ -13,73 +13,81 @@ const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [loading, setLoading] = useState(true); // Represents initial app load status
 
   useEffect(() => {
-    // This effect runs once on mount to handle initial auth state and set up listener.
+    // This function performs the initial check for a session.
     const initializeAuth = async () => {
-      // 1. Get initial session
-      try {
-        const { data: { session: initialSession }, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) throw sessionError;
+        try {
+            const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+            if (sessionError) throw sessionError;
 
-        // 2. Fetch profile only if session exists
-        if (initialSession?.user) {
-          const { data, error } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', initialSession.user.id)
-            .single();
-            
-          if (error || !data) {
-            console.error("Profile fetch failed on init, treating user as logged out for this render.", error);
-            // By setting state to null but NOT calling signOut(), we allow a refresh to retry the fetch
-            // while the session token is still persisted in localStorage.
+            let userProfile: Profile | null = null;
+            if (session?.user) {
+                try {
+                    const { data, error } = await supabase
+                        .from('profiles')
+                        .select('*')
+                        .eq('id', session.user.id)
+                        .single();
+                    
+                    if (error && error.code !== 'PGRST116') throw error; // Ignore "row not found"
+                    if (data) userProfile = data;
+                } catch (error: any) {
+                    console.error("Error fetching profile on initial load:", error.message);
+                }
+
+                if (!userProfile) {
+                    userProfile = {
+                        id: session.user.id,
+                        full_name: '',
+                        role: (session.user.app_metadata.role as any) || null,
+                        avatar_url: ''
+                    };
+                }
+            }
+            setSession(session);
+            setProfile(userProfile);
+        } catch (error) {
+            console.error("Error during initial auth check:", error);
             setSession(null);
             setProfile(null);
-          } else {
-            // Success
-            setSession(initialSession);
-            setProfile(data);
-          }
-        } else {
-          // No initial session, ensure state is clean.
-          setSession(null);
-          setProfile(null);
+        } finally {
+            // This is crucial: setLoading(false) is always called after the initial check.
+            setLoading(false);
         }
-      } catch (error: any) {
-        console.error("Error during initial auth:", error.message);
-        setSession(null);
-        setProfile(null);
-      } finally {
-        // 3. Initial loading is complete regardless of outcome
-        setLoading(false);
-      }
     };
-    
+
     initializeAuth();
 
-    // 4. Set up auth state change listener as the single source of truth.
+    // After the initial check, this listener handles all subsequent auth changes.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, newSession) => {
-        if (newSession?.user) {
-          const { data, error } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', newSession.user.id)
-            .single();
-
-          if (data && !error) {
-            setSession(newSession);
-            setProfile(data);
-          } else {
-            console.error("Profile fetch failed on auth state change. Treating user as logged out for this render.", error);
-            // Don't sign out, just clear the application state.
-            setSession(null);
-            setProfile(null);
+      async (_event, session) => {
+        let userProfile: Profile | null = null;
+        if (session?.user) {
+          try {
+            const { data, error } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', session.user.id)
+              .single();
+            
+            if (error && error.code !== 'PGRST116') throw error; // Ignore "row not found"
+            if (data) userProfile = data;
+          } catch (error: any) {
+            console.error("Error fetching profile on auth state change:", error.message);
           }
-        } else {
-          // User is logged out, clear both session and profile.
-          setSession(null);
-          setProfile(null);
         }
+
+        if (session?.user && !userProfile) {
+            userProfile = {
+                id: session.user.id,
+                full_name: '',
+                role: (session.user.app_metadata.role as any) || null,
+                avatar_url: ''
+            };
+        }
+        
+        setSession(session);
+        setProfile(userProfile);
+        // The loading state is no longer managed here, as it's only for the initial page load.
       }
     );
 
@@ -87,6 +95,7 @@ const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
       subscription?.unsubscribe();
     };
   }, []); // Empty dependency array ensures this runs only once.
+
 
   const value = useMemo(() => ({
     session,

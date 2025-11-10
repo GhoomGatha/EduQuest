@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Language, TutorSession } from '../types';
 import { t } from '../utils/localization';
@@ -311,21 +312,50 @@ const AITutor: React.FC<AITutorProps> = ({
                 a.click();
                 URL.revokeObjectURL(url);
             } else if (format === 'pdf') {
-                await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+                try {
+                    await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+                } catch (error) {
+                    console.error("Failed to load jsPDF library", error);
+                    showToast("Failed to load PDF export library.", "error");
+                    return;
+                }
                 const { jsPDF } = (window as any).jspdf;
                 const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     
                 let fontName = 'helvetica';
+                let fontLoaded = false;
+                const languageMap: Record<Language, string> = { en: 'English', bn: 'Bengali', hi: 'Hindi', ka: 'Kannada' };
+
                 if (lang === 'bn') {
                     const fontData = await getBengaliFontBase64();
-                    if (fontData) { doc.addFileToVFS('NotoSansBengali-Regular.ttf', fontData); doc.addFont('NotoSansBengali-Regular.ttf', 'NotoSansBengali', 'normal'); fontName = 'NotoSansBengali'; }
+                    if (fontData) {
+                        doc.addFileToVFS('NotoSansBengali-Regular.ttf', fontData);
+                        doc.addFont('NotoSansBengali-Regular.ttf', 'NotoSansBengali', 'normal');
+                        fontName = 'NotoSansBengali';
+                        fontLoaded = true;
+                    }
                 } else if (lang === 'hi') {
                     const fontData = await getDevanagariFontBase64();
-                    if (fontData) { doc.addFileToVFS('NotoSansDevanagari-Regular.ttf', fontData); doc.addFont('NotoSansDevanagari-Regular.ttf', 'NotoSansDevanagari', 'normal'); fontName = 'NotoSansDevanagari'; }
+                    if (fontData) {
+                        doc.addFileToVFS('NotoSansDevanagari-Regular.ttf', fontData);
+                        doc.addFont('NotoSansDevanagari-Regular.ttf', 'NotoSansDevanagari', 'normal');
+                        fontName = 'NotoSansDevanagari';
+                        fontLoaded = true;
+                    }
                 } else if (lang === 'ka') {
                     const fontData = await getKannadaFontBase64();
-                    if (fontData) { doc.addFileToVFS('NotoSansKannada-Regular.ttf', fontData); doc.addFont('NotoSansKannada-Regular.ttf', 'NotoSansKannada', 'normal'); fontName = 'NotoSansKannada'; }
+                    if (fontData) {
+                        doc.addFileToVFS('NotoSansKannada-Regular.ttf', fontData);
+                        doc.addFont('NotoSansKannada-Regular.ttf', 'NotoSansKannada', 'normal');
+                        fontName = 'NotoSansKannada';
+                        fontLoaded = true;
+                    }
                 }
+
+                if (lang !== 'en' && !fontLoaded) {
+                    showToast(`Could not load the font for ${languageMap[lang]}. PDF content may not display correctly.`, 'error');
+                }
+                
                 doc.setFont(fontName, 'normal');
     
                 const pageHeight = doc.internal.pageSize.getHeight();

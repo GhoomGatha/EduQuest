@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useCallback, useRef, lazy, Suspense, useMemo } from 'react';
 import { Question, Paper, Tab, Language, Profile, QuestionSource, Difficulty, Semester, UploadProgress, TutorSession, Classroom, StudentQuery } from './types';
 import { t } from './utils/localization';
@@ -398,25 +397,45 @@ const handleSavePaper = async (paper: Paper) => {
   const onUploadPaper = async (paper: Paper, files: FileList, onProgress: (progress: UploadProgress | null) => void, options: { signal: AbortSignal }): Promise<Paper> => {
     if (!session?.user) throw new Error("User not authenticated");
 
+    const UPLOAD_TIMEOUT_PER_FILE = 60000; // 60 seconds timeout for each file
     const paperId = crypto.randomUUID();
     const folderPath = `${session.user.id}/${paperId}`;
     const uploadedFilePaths: string[] = [];
+    const uploadResults = [];
     
     try {
         let completedCount = 0;
-        const uploadPromises = Array.from(files).map(file => {
-            return (async () => {
-                const filePath = `${folderPath}/${file.name}`;
-                const { error } = await supabase.storage.from('papers').upload(filePath, file, { signal: options.signal });
-                if (error) throw error;
-                uploadedFilePaths.push(filePath);
-                completedCount++;
-                onProgress({ total: files.length, completed: completedCount, pending: files.length - completedCount, currentFile: file.name });
-                return { url: supabase.storage.from('papers').getPublicUrl(filePath).data.publicUrl, type: file.type };
-            })();
-        });
+        for (const file of Array.from(files)) {
+            if (options.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+            
+            onProgress({ total: files.length, completed: completedCount, pending: files.length - completedCount, currentFile: file.name });
 
-        const uploadResults = await Promise.all(uploadPromises);
+            const filePath = `${folderPath}/${file.name}`;
+            
+            const uploadPromise = supabase.storage.from('papers').upload(filePath, file, { signal: options.signal });
+            
+            const timeoutPromise = new Promise((_, reject) => {
+                const id = setTimeout(() => {
+                    clearTimeout(id);
+                    reject(new Error(`Upload timed out for file "${file.name}" after ${UPLOAD_TIMEOUT_PER_FILE / 1000} seconds.`));
+                }, UPLOAD_TIMEOUT_PER_FILE);
+            });
+
+            const result = await Promise.race([uploadPromise, timeoutPromise]);
+            const { error } = result as { data: { path: string }, error: any };
+
+            if (error) {
+                const customError = new Error(error.message);
+                (customError as any).fileName = file.name;
+                throw customError;
+            }
+            
+            uploadedFilePaths.push(filePath);
+            completedCount++;
+            
+            uploadResults.push({ url: supabase.storage.from('papers').getPublicUrl(filePath).data.publicUrl, type: file.type });
+        }
+
         onProgress({ total: files.length, completed: files.length, pending: 0, currentFile: 'Finalizing...' });
 
         const { id, ...paperMeta } = paper;
@@ -428,51 +447,97 @@ const handleSavePaper = async (paper: Paper) => {
         showToast(t('uploadSuccess', lang));
         return savedPaper as Paper;
 
-    } catch (error) {
-        if (uploadedFilePaths.length > 0) supabase.storage.from('papers').remove(uploadedFilePaths);
+    } catch (error: any) {
+        if (uploadedFilePaths.length > 0) {
+            supabase.storage.from('papers').remove(uploadedFilePaths)
+                .then(({ error: removeError }) => {
+                    if (removeError) {
+                        console.warn("Failed to clean up aborted/failed upload:", removeError.message);
+                    }
+                });
+        }
         throw error;
     }
   };
   
   const onProcessPaper = async (paper: Paper, files: FileList) => {
     if (!files || files.length === 0 || !session?.user) return;
-    const firstFile = files[0];
-    const isExtractable = firstFile.type.startsWith('image/') || firstFile.type === 'application/pdf' || firstFile.type === 'text/plain';
-    if (!isExtractable) return;
 
-    const processAbortController = new AbortController();
-    showToast(`AI processing started for "${paper.title}"...`, 'success');
+    const extractableFiles = Array.from(files).filter(file => 
+        file.type.startsWith('image/') || file.type === 'application/pdf' || file.type === 'text/plain'
+    );
+
+    if (extractableFiles.length === 0) return;
+
+    showToast(`AI processing started for ${extractableFiles.length} file(s) in "${paper.title}"...`, 'success');
     
-    try {
-        const dataUrl = await readFileAsDataURL(firstFile, processAbortController.signal);
-        let results: Partial<Question>[] = [];
-        
-        if (firstFile.type.startsWith('image/')) results = await extractQuestionsFromImageAI(dataUrl, paper.class, lang, userApiKey, userOpenApiKey, processAbortController.signal);
-        else if (firstFile.type === 'application/pdf') results = await extractQuestionsFromPdfAI(dataUrl, paper.class, lang, userApiKey, userOpenApiKey, processAbortController.signal);
-        else if (firstFile.type === 'text/plain') {
-            const binaryString = atob(dataUrl.split(',')[1]);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-            const textContent = new TextDecoder().decode(bytes);
-            results = await extractQuestionsFromTextAI(textContent, paper.class, lang, userApiKey, userOpenApiKey, processAbortController.signal);
+    let allExtractedQuestions: Question[] = [];
+    const processAbortController = new AbortController();
+
+    for (const file of extractableFiles) {
+        try {
+            const dataUrl = await readFileAsDataURL(file, processAbortController.signal);
+            let results: Partial<Question>[] = [];
+            
+            if (file.type.startsWith('image/')) {
+                results = await extractQuestionsFromImageAI(dataUrl, paper.class, lang, userApiKey, userOpenApiKey, processAbortController.signal);
+            } else if (file.type === 'application/pdf') {
+                results = await extractQuestionsFromPdfAI(dataUrl, paper.class, lang, userApiKey, userOpenApiKey, processAbortController.signal);
+            } else if (file.type === 'text/plain') {
+                const binaryString = atob(dataUrl.split(',')[1]);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+                const textContent = new TextDecoder().decode(bytes);
+                results = await extractQuestionsFromTextAI(textContent, paper.class, lang, userApiKey, userOpenApiKey, processAbortController.signal);
+            }
+            
+            if (results.length > 0) {
+                const newQuestions: Question[] = results.map((q, i): Question => ({
+                    id: `scan-${paper.id}-${file.name.replace(/[^a-zA-Z0-9]/g, '')}-${i}`,
+                    class: paper.class,
+                    chapter: 'Scanned',
+                    text: q.text!,
+                    answer: q.answer,
+                    marks: q.marks || 1,
+                    difficulty: Difficulty.Moderate,
+                    used_in: [],
+                    source: QuestionSource.Scan,
+                    year: paper.year,
+                    semester: paper.semester,
+                    tags: [],
+                    created_at: new Date().toISOString(),
+                }));
+                allExtractedQuestions.push(...newQuestions);
+            }
+        } catch (err: any) {
+            if (err.name !== 'AbortError') {
+                showToast(`AI failed to process file "${file.name}": ${err.message}`, 'error');
+            }
+        }
+    }
+
+    if (allExtractedQuestions.length > 0) {
+        // Fetch current paper state to avoid overwriting existing questions if any
+        const { data: currentPaper, error: fetchError } = await supabase
+            .from('papers')
+            .select('questions')
+            .eq('id', paper.id)
+            .single();
+
+        if (fetchError) {
+            showToast(`Error fetching current paper state: ${fetchError.message}`, 'error');
+            return;
         }
         
-        if (results.length > 0) {
-            const extractedQuestions: Question[] = results.map((q, i): Question => ({
-                id: `scan-${paper.id}-${i}`, class: paper.class, chapter: 'Scanned', text: q.text!, answer: q.answer, marks: q.marks || 1, difficulty: Difficulty.Moderate,
-                used_in: [], source: QuestionSource.Scan, year: paper.year, semester: paper.semester, tags: [], created_at: new Date().toISOString(),
-            }));
+        const existingQuestions = currentPaper?.questions || [];
+        const combinedQuestions = [...existingQuestions, ...allExtractedQuestions];
 
-            await supabase.from('questions').insert(extractedQuestions.map(q => ({ ...q, user_id: session!.user!.id })));
-            await supabase.from('papers').update({ questions: extractedQuestions }).eq('id', paper.id);
+        await supabase.from('questions').insert(allExtractedQuestions.map(q => ({ ...q, user_id: session!.user!.id })));
+        await supabase.from('papers').update({ questions: combinedQuestions }).eq('id', paper.id);
 
-            showToast(t('paperGeneratedWithQuestions', lang).replace('{count}', String(extractedQuestions.length)));
-        } else {
-             showToast(`AI found no questions to extract from "${paper.title}".`, 'success');
-        }
-
-    } catch (err: any) {
-        showToast(`AI failed to process "${paper.title}": ${err.message}`, 'error');
+        showToast(`AI successfully extracted ${allExtractedQuestions.length} questions from your upload.`, 'success');
+    } else {
+        showToast(`AI found no questions to extract from the uploaded files.`, 'success');
     }
   };
 
@@ -510,24 +575,26 @@ const handleSavePaper = async (paper: Paper) => {
   const handleImportData = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        try {
-          const { questions: iq, papers: ip } = JSON.parse(event.target?.result as string);
-          if (Array.isArray(iq)) {
-            await supabase.from('questions').delete().eq('user_id', session!.user.id);
-            await supabase.from('questions').insert(iq.map((q: any) => ({...q, user_id: session!.user.id})));
-          }
-          if (Array.isArray(ip)) {
-            await supabase.from('papers').delete().eq('user_id', session!.user.id);
-            await supabase.from('papers').insert(ip.map((p: any) => ({...p, user_id: session!.user.id})));
-          }
-          showToast(t('dataImported', lang));
-        } catch (error) {
-          showToast('Failed to import data.', 'error');
-        }
-      };
-      reader.readAsText(file);
+      if (window.confirm('Are you sure you want to import data? This will overwrite all existing questions and papers.')) {
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+            try {
+                const { questions: iq, papers: ip } = JSON.parse(event.target?.result as string);
+                if (Array.isArray(iq)) {
+                    await supabase.from('questions').delete().eq('user_id', session!.user.id);
+                    await supabase.from('questions').insert(iq.map((q: any) => ({...q, user_id: session!.user.id})));
+                }
+                if (Array.isArray(ip)) {
+                    await supabase.from('papers').delete().eq('user_id', session!.user.id);
+                    await supabase.from('papers').insert(ip.map((p: any) => ({...p, user_id: session!.user.id})));
+                }
+                showToast(t('dataImported', lang));
+            } catch (error) {
+                showToast('Failed to import data.', 'error');
+            }
+        };
+        reader.readAsText(file);
+      }
     }
   };
 

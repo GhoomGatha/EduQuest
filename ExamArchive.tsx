@@ -1,8 +1,9 @@
+
 import React, { useState, useMemo, ChangeEvent, useRef, useEffect, useCallback } from 'react';
 import { Paper, QuestionSource, Semester, UploadProgress, Language, Question, Classroom } from '../types';
 import { t } from '../utils/localization';
 import Modal from './Modal';
-import { CLASSES, SEMESTERS, YEARS, BOARDS, TEACHER_CURRICULUM_PREFS_KEY } from '../constants';
+import { CLASSES, SEMESTERS, YEARS, BOARDS } from '../constants';
 import { getBengaliFontBase64, getDevanagariFontBase64, getKannadaFontBase64 } from '../utils/fontData';
 import { loadScript } from '../utils/scriptLoader';
 import { getSubjectsAI } from '../services/geminiService';
@@ -38,36 +39,35 @@ interface ExamArchiveProps {
   onAssignPaper: (paper: Paper) => void;
 }
 
-const getInitialUploadState = () => {
-    // Define defaults separately for clarity
-    const defaults = {
-      title: '',
-      year: new Date().getFullYear(),
-      class: 10,
-      semester: Semester.First,
-      board: 'WBBSE',
-      subject: '',
-    };
+const EXAM_ARCHIVE_CURRICULUM_KEY = 'eduquest_exam_archive_curriculum_prefs_v1';
 
+const getInitialUploadState = () => {
     try {
-        const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
+        const saved = localStorage.getItem(EXAM_ARCHIVE_CURRICULUM_KEY);
         if (saved) {
             const parsed = JSON.parse(saved);
-            // Merge saved data over defaults, ensuring all keys are present
+            // Ensure all keys are present by merging with a default structure
             return {
-                ...defaults,
-                year: parsed.year || defaults.year,
-                class: parsed.class || defaults.class,
-                semester: parsed.semester || defaults.semester,
-                board: parsed.board || defaults.board,
-                subject: parsed.subject || defaults.subject,
+                title: '',
+                year: parsed.year || new Date().getFullYear(),
+                class: parsed.class || 10,
+                semester: parsed.semester || Semester.First,
+                board: parsed.board || 'WBBSE',
+                subject: parsed.subject || '', // Default to empty, will be updated by useEffect
             };
         }
     } catch (e) {
         console.warn("Could not parse saved curriculum prefs", e);
     }
-    // Return defaults if nothing is saved or parsing fails
-    return defaults;
+    // Default state if nothing is saved or parsing fails
+    return {
+      title: '',
+      year: new Date().getFullYear(),
+      class: 10,
+      semester: Semester.First,
+      board: 'WBBSE',
+      subject: '', // Default to empty, will be updated by useEffect
+    };
 };
 
 
@@ -117,7 +117,7 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
   useEffect(() => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { title, ...curriculumData } = uploadData;
-    localStorage.setItem(TEACHER_CURRICULUM_PREFS_KEY, JSON.stringify(curriculumData));
+    localStorage.setItem(EXAM_ARCHIVE_CURRICULUM_KEY, JSON.stringify(curriculumData));
   }, [uploadData]);
 
 

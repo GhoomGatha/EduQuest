@@ -6,6 +6,7 @@ import { Language, Profile } from '../types';
 import { supabase } from '../services/supabaseClient';
 import CameraModal from './CameraModal';
 import { useAuth } from '../hooks/useAuth';
+import ChangePasswordModal from './ChangePasswordModal';
 
 interface SettingsProps {
     onExport: () => void;
@@ -76,7 +77,8 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
   const [isCameraModalOpen, setCameraModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-  const { session } = useAuth();
+  const [isChangePasswordModalOpen, setChangePasswordModalOpen] = useState(false);
+  const { session, setSession, setProfile } = useAuth();
 
   const inputStyles = "w-full p-2 border rounded-lg border-slate-300 bg-slate-50 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 transition";
 
@@ -157,8 +159,6 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
   const handleLogout = async () => {
     setIsLoggingOut(true);
 
-    // The new logic in App.tsx handles login timestamps, so we just need to sign out.
-    // We can also clear the sessionStorage key as a cleanup step.
     if (session?.user?.id) {
         const currentSessionKey = `eduquest_current_session_start_${session.user.id}`;
         sessionStorage.removeItem(currentSessionKey);
@@ -170,8 +170,12 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
         console.error('Logout error:', error.message);
         showToast(`Logout failed: ${error.message}. Please try again.`, 'error');
         setIsLoggingOut(false);
+    } else {
+        // Manually clear the session to trigger immediate UI update to the login page.
+        // The onAuthStateChange listener will also fire, but this makes the UI feel instant.
+        setSession(null);
+        setProfile(null);
     }
-    // No 'else' is needed. The onAuthStateChange listener in App.tsx will handle the UI update.
   };
 
   const buttonBaseStyles = "mt-2 sm:mt-0 w-full sm:w-auto px-4 py-2 font-semibold text-white rounded-lg shadow-sm hover:shadow-md hover:-translate-y-px transition-all";
@@ -217,6 +221,29 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
                 </div>
             </div>
         )}
+      </div>
+
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+        <AnimatedHeader emoji="🛡️" animation="animate-pulse" title="Account Security" />
+        <div className="space-y-4 mt-4">
+            {session?.user?.app_metadata?.provider === 'email' && (
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-3 rounded-lg bg-slate-50">
+                    <p className="text-slate-700 font-medium">Change Password</p>
+                    <button
+                        onClick={() => setChangePasswordModalOpen(true)}
+                        className={`${buttonBaseStyles} bg-slate-600 hover:bg-slate-700`}
+                    >
+                        Change Password
+                    </button>
+                </div>
+            )}
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between p-3 rounded-lg bg-red-50">
+                <p className="text-red-800 font-medium">Logout</p>
+                <button onClick={handleLogout} disabled={isLoggingOut} className={`${buttonBaseStyles} bg-red-600 hover:bg-red-700 disabled:bg-red-400`}>
+                    {isLoggingOut ? 'Logging out...' : 'Logout'}
+                </button>
+            </div>
+        </div>
       </div>
 
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -369,14 +396,13 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
           <p className="text-xs text-slate-500 mt-2">{t('designedFor', lang)}</p>
         </div>
       </div>
-
-       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-            <button onClick={handleLogout} disabled={isLoggingOut} className={`${buttonBaseStyles} w-full bg-slate-700 hover:bg-slate-800 disabled:bg-slate-500`}>
-                {isLoggingOut ? 'Logging out...' : 'Logout'}
-            </button>
-       </div>
     </div>
     <CameraModal isOpen={isCameraModalOpen} onClose={() => setCameraModalOpen(false)} onCapture={handlePhotoTaken} />
+    <ChangePasswordModal 
+        isOpen={isChangePasswordModalOpen} 
+        onClose={() => setChangePasswordModalOpen(false)}
+        showToast={showToast}
+    />
     </>
   );
 };

@@ -6,6 +6,7 @@ export const OPENAI_API_KEY_STORAGE_KEY = 'eduquest_user_openai_api_key'; // Ope
 // FIX: Export LANGUAGE_STORAGE_KEY to be used across the application for storing language preference.
 export const LANGUAGE_STORAGE_KEY = 'eduquest_lang';
 export const FINAL_EXAM_PAPERS_FILTERS_KEY = 'eduquest_final_exam_filters_v1';
+export const TEACHER_CURRICULUM_PREFS_KEY = 'eduquest_teacher_curriculum_prefs_v1';
 export const CURRENT_YEAR = new Date().getFullYear();
 export const YEARS = Array.from({ length: 26 }, (_, i) => 2020 + i);
 export const CLASSES = [7, 8, 9, 10, 11, 12];

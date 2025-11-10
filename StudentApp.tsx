@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, lazy, Suspense, useMemo } from 'react';
 import { useAuth } from './hooks/useAuth';
 import { supabase } from './services/supabaseClient';
@@ -413,7 +414,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
         setAttempts(prev => [attempt, ...prev]);
     } finally {
         // This ensures navigation happens even if saving fails
-        setViewState({ view: 'results', attemptId: savedAttempt.paperId + savedAttempt.completedAt });
+        setViewState({ view: 'results', attemptId: savedAttempt.db_id });
     }
   };
   
@@ -650,7 +651,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
                     tutorSessions={tutorSessions}
                     lang={lang} 
                     onStartTest={handleStartTest}
-                    onViewResult={(attempt) => setViewState({ view: 'results', attemptId: attempt.paperId + attempt.completedAt })}
+                    onViewResult={(attempt) => setViewState({ view: 'results', attemptId: attempt.db_id })}
                     userApiKey={userApiKey}
                     userOpenApiKey={userOpenApiKey}
                     showToast={showToast}

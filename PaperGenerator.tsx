@@ -1,9 +1,8 @@
-
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Paper, Question, QuestionSource, Difficulty, Semester, GroundingSource, Language } from '../types';
 import { t } from '../utils/localization';
 import { generateQuestionsAI, getChaptersAI, getSubjectsAI } from '../services/geminiService';
-import { CLASSES, YEARS, SEMESTERS, BOARDS, MARKS } from '../constants';
+import { CLASSES, YEARS, SEMESTERS, BOARDS, MARKS, TEACHER_CURRICULUM_PREFS_KEY } from '../constants';
 import { useHistory } from '../hooks/useHistory';
 import Modal from './Modal';
 import { getBengaliFontBase64, getDevanagariFontBase64, getKannadaFontBase64 } from '../utils/fontData';
@@ -94,8 +93,24 @@ const AnimatedHeader = ({ emoji, animation, title }: { emoji: string; animation:
 const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper, lang, showToast, userApiKey, userOpenApiKey }) => {
     const [title, setTitle] = useState('');
     const [year, setYear] = useState(new Date().getFullYear());
-    const [board, setBoard] = useState('WBBSE');
-    const [selectedClass, setClass] = useState(10);
+    const [board, setBoard] = useState(() => {
+        try {
+            const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
+            return saved ? JSON.parse(saved).board || 'WBBSE' : 'WBBSE';
+        } catch { return 'WBBSE'; }
+    });
+    const [selectedClass, setClass] = useState(() => {
+        try {
+            const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
+            return saved ? JSON.parse(saved).class || 10 : 10;
+        } catch { return 10; }
+    });
+    const [selectedSubject, setSelectedSubject] = useState(() => {
+        try {
+            const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
+            return saved ? JSON.parse(saved).subject || '' : '';
+        } catch { return ''; }
+    });
     const [semester, setSemester] = useState<Semester>(Semester.First);
     const [avoidPrevious, setAvoidPrevious] = useState(true);
     const [isGenerating, setIsGenerating] = useState(false);
@@ -106,7 +121,6 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
     
     const [subjectsList, setSubjectsList] = useState<string[]>([]);
     const [loadingSubjects, setLoadingSubjects] = useState(false);
-    const [selectedSubject, setSelectedSubject] = useState('');
     
     const [chaptersList, setChaptersList] = useState<string[]>([]);
     const [loadingChapters, setLoadingChapters] = useState(false);
@@ -157,6 +171,22 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
     useEffect(() => {
         localStorage.setItem(WBBSE_SYLLABUS_KEY, JSON.stringify(settings.wbbseSyllabusOnly));
     }, [settings.wbbseSyllabusOnly]);
+
+    // Persist curriculum changes to local storage to be shared across components.
+    useEffect(() => {
+        try {
+            const currentPrefs = JSON.parse(localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY) || '{}');
+            const newPrefs = {
+                ...currentPrefs,
+                board,
+                class: selectedClass,
+                subject: selectedSubject,
+            };
+            localStorage.setItem(TEACHER_CURRICULUM_PREFS_KEY, JSON.stringify(newPrefs));
+        } catch (e) {
+            console.warn("Could not save curriculum preferences in PaperGenerator", e);
+        }
+    }, [board, selectedClass, selectedSubject]);
 
     const availableClasses = useMemo(() => {
         switch (board) {
@@ -240,9 +270,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             const draftData = JSON.parse(savedDraft);
             setTitle(draftData.title || '');
             setYear(draftData.year || new Date().getFullYear());
-            setBoard(draftData.board || 'WBBSE');
-            setClass(draftData.selectedClass || 10);
-            setSelectedSubject(draftData.selectedSubject || '');
+            // Board, class, and subject are handled by persistent curriculum state, not the draft.
             setSemester(draftData.semester || Semester.First);
             setAvoidPrevious(draftData.avoidPrevious !== undefined ? draftData.avoidPrevious : true);
             
@@ -275,7 +303,8 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             setIsDraftLoaded(true);
             stableShowToast(t('draftLoaded', lang));
         }
-    }, [lang, stableShowToast, resetSettings]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [resetSettings]);
 
     useEffect(() => {
         const intervalId = setInterval(() => {
@@ -307,19 +336,11 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
 
         const requiresAnswer = ['Multiple Choice', 'Fill in the Blanks', 'True/False', 'Odd Man Out', 'Matching'].includes(type);
         
-        // Check if any of the NEWLY selected types require an answer
-        const anyNewTypesRequireAnswer = newTypes.some(t => 
-            ['Multiple Choice', 'Fill in the Blanks', 'True/False', 'Odd Man Out', 'Matching'].includes(t)
-        );
-
         let newGenerateAnswers = settings.aiGenerateAnswers;
         if (isAdding && requiresAnswer) {
-            // If we add a type that requires an answer, always turn it on.
+            // If a type that requires an answer is added, automatically enable answer generation.
+            // We avoid automatically disabling it to respect a user's manual choice for other types like Short Answer.
             newGenerateAnswers = true;
-        } else if (!anyNewTypesRequireAnswer) {
-            // If after changes, NO types require an answer, we can safely turn it off.
-            // The user can re-enable it for short answers if they wish.
-            newGenerateAnswers = false;
         }
         
         setSettings({ ...settings, aiQuestionType: newTypes, aiGenerateAnswers: newGenerateAnswers });
@@ -400,7 +421,6 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         abortControllerRef.current = new AbortController();
         const signal = abortControllerRef.current.signal;
     
-        // FIX: Moved 'distribution' outside the try block to make it accessible in the catch block.
         const distribution = settings.distribution.filter(d => d.count > 0 && d.marks > 0);
         try {
             if (distribution.length === 0) {
@@ -430,14 +450,33 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                 const textQuestionTypes = allQuestionTypes.filter(t => t !== 'Image-based');
                 const hasImageQuestions = allQuestionTypes.includes('Image-based');
 
-                // 1. Batch generate all text-based questions
-                if (textQuestionTypes.length > 0) {
-                    const textPaperStructure = distribution.map(dist => ({
-                        count: dist.count,
-                        marks: dist.marks,
-                        types: textQuestionTypes,
-                    }));
-                    
+                let textPaperStructure: { count: number; marks: number; types: string[]; }[] = [];
+                let imageGenerationRequests: { count: number; marks: number; }[] = [];
+
+                if (hasImageQuestions && textQuestionTypes.length > 0) {
+                    // Mixed mode: split the distribution
+                    distribution.forEach(({ count, marks }) => {
+                        const imageCount = Math.round(count / allQuestionTypes.length);
+                        const textCount = count - imageCount;
+                        if (textCount > 0) {
+                            textPaperStructure.push({ count: textCount, marks: marks, types: textQuestionTypes });
+                        }
+                        if (imageCount > 0) {
+                            imageGenerationRequests.push({ count: imageCount, marks: marks });
+                        }
+                    });
+                } else if (hasImageQuestions) {
+                    // Only image questions
+                    distribution.forEach(({ count, marks }) => {
+                        imageGenerationRequests.push({ count: count, marks: marks });
+                    });
+                } else {
+                    // Only text questions
+                    textPaperStructure = distribution.map(d => ({ ...d, types: textQuestionTypes }));
+                }
+
+                // 1. Generate text-based questions if any
+                if (textPaperStructure.length > 0) {
                     const { generatedQuestions, groundingChunks } = await generateQuestionsAI({
                         class: selectedClass, subject: selectedSubject, chapters: settings.aiChapters, difficulty: settings.aiDifficulty,
                         paperStructure: textPaperStructure,
@@ -459,17 +498,14 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                 }
 
                 // 2. Concurrently generate image-based questions
-                if (hasImageQuestions) {
-                    const imageQuestionPromises = distribution.map(({ count, marks }) => {
-                        if (count > 0) {
-                            return generateQuestionsAI({
-                                class: selectedClass, subject: selectedSubject, chapter: settings.aiChapters[0], marks,
-                                difficulty: settings.aiDifficulty, count: count, questionType: 'Image-based',
-                                keywords: settings.aiKeywords, generateAnswer: settings.aiGenerateAnswers,
-                                wbbseSyllabusOnly: settings.wbbseSyllabusOnly, lang: lang,
-                            }, existingQuestionPool, userApiKey, userOpenApiKey, signal);
-                        }
-                        return Promise.resolve({ generatedQuestions: [], groundingChunks: [] });
+                if (imageGenerationRequests.length > 0) {
+                    const imageQuestionPromises = imageGenerationRequests.map(({ count, marks }) => {
+                        return generateQuestionsAI({
+                            class: selectedClass, subject: selectedSubject, chapter: settings.aiChapters[0], marks,
+                            difficulty: settings.aiDifficulty, count: count, questionType: 'Image-based',
+                            keywords: settings.aiKeywords, generateAnswer: settings.aiGenerateAnswers,
+                            wbbseSyllabusOnly: settings.wbbseSyllabusOnly, lang: lang,
+                        }, existingQuestionPool, userApiKey, userOpenApiKey, signal);
                     });
 
                     const imageQuestionResults = await Promise.all(imageQuestionPromises);
@@ -478,7 +514,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                         if (!result || !result.generatedQuestions) return;
                         const { generatedQuestions } = result;
                         if (generatedQuestions.length > 0) {
-                            const { marks } = distribution[index];
+                            const { marks } = imageGenerationRequests[index];
                             const newQuestions = generatedQuestions.map((g): Question => ({
                                 id: `gen-img-${new Date().toISOString()}-${Math.random()}`, text: g.text!, answer: g.answer,
                                 image_data_url: g.image_data_url, class: selectedClass, chapter: settings.aiChapters[0], marks: marks,
