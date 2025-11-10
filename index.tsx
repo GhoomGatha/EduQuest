@@ -13,51 +13,9 @@ const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [loading, setLoading] = useState(true); // Represents initial app load status
 
   useEffect(() => {
-    // This function performs the initial check for a session.
-    const initializeAuth = async () => {
-        try {
-            const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-            if (sessionError) throw sessionError;
-
-            let userProfile: Profile | null = null;
-            if (session?.user) {
-                try {
-                    const { data, error } = await supabase
-                        .from('profiles')
-                        .select('*')
-                        .eq('id', session.user.id)
-                        .single();
-                    
-                    if (error && error.code !== 'PGRST116') throw error; // Ignore "row not found"
-                    if (data) userProfile = data;
-                } catch (error: any) {
-                    console.error("Error fetching profile on initial load:", error.message);
-                }
-
-                if (!userProfile) {
-                    userProfile = {
-                        id: session.user.id,
-                        full_name: '',
-                        role: (session.user.app_metadata.role as any) || null,
-                        avatar_url: ''
-                    };
-                }
-            }
-            setSession(session);
-            setProfile(userProfile);
-        } catch (error) {
-            console.error("Error during initial auth check:", error);
-            setSession(null);
-            setProfile(null);
-        } finally {
-            // This is crucial: setLoading(false) is always called after the initial check.
-            setLoading(false);
-        }
-    };
-
-    initializeAuth();
-
-    // After the initial check, this listener handles all subsequent auth changes.
+    // onAuthStateChange fires on initial load and whenever auth state changes.
+    // This handles both the initial session check and subsequent updates,
+    // fixing the race condition from the previous implementation.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (_event, session) => {
         let userProfile: Profile | null = null;
@@ -69,13 +27,19 @@ const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
               .eq('id', session.user.id)
               .single();
             
-            if (error && error.code !== 'PGRST116') throw error; // Ignore "row not found"
-            if (data) userProfile = data;
+            // 'PGRST116' means no row was found, which is valid for a new user.
+            if (error && error.code !== 'PGRST116') {
+                throw error;
+            }
+            if (data) {
+                userProfile = data;
+            }
           } catch (error: any) {
-            console.error("Error fetching profile on auth state change:", error.message);
+            console.error("Error fetching profile:", error.message);
           }
         }
-
+        
+        // If profile fetch fails or returns no data, create a temporary profile
         if (session?.user && !userProfile) {
             userProfile = {
                 id: session.user.id,
@@ -84,17 +48,19 @@ const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
                 avatar_url: ''
             };
         }
-        
+
         setSession(session);
         setProfile(userProfile);
-        // The loading state is no longer managed here, as it's only for the initial page load.
+        // Loading is complete once the initial auth state has been determined.
+        setLoading(false);
       }
     );
 
+    // Cleanup subscription on component unmount
     return () => {
       subscription?.unsubscribe();
     };
-  }, []); // Empty dependency array ensures this runs only once.
+  }, []);
 
 
   const value = useMemo(() => ({
