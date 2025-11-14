@@ -274,7 +274,7 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
     }
   };
   
-const handleSavePaper = async (paper: Paper) => {
+const handleSavePaper = async (paper: Paper): Promise<Paper | void> => {
     if (!session?.user) {
         showToast("You must be logged in to save.", "error");
         return;
@@ -296,7 +296,7 @@ const handleSavePaper = async (paper: Paper) => {
         const { data: newQuestionsData, error: questionsError } = await supabase
             .from('questions')
             .insert(questionsToInsert)
-            .select('id, created_at'); // Only select DB-generated columns
+            .select('id, created_at');
 
         if (questionsError) {
             showToast(`Failed to add new questions to bank: ${questionsError.message}`, 'error');
@@ -304,8 +304,6 @@ const handleSavePaper = async (paper: Paper) => {
         }
 
         if (newQuestionsData) {
-            // Manually merge DB-generated IDs back into the full original question objects
-            // This prevents losing any data (like answers or full text) if `select()` was misbehaving
             savedNewQuestions = newQuestionsFromPaper.map((originalQuestion, index) => ({
                 ...originalQuestion,
                 id: newQuestionsData[index].id,
@@ -331,7 +329,6 @@ const handleSavePaper = async (paper: Paper) => {
 
     if (paperError) {
         showToast(`Error saving paper to archive: ${paperError.message}`, 'error');
-        // Still add questions to bank even if paper saving fails
         if (savedNewQuestions.length > 0) {
             setQuestions(prev => [...savedNewQuestions, ...prev]);
         }
@@ -350,6 +347,8 @@ const handleSavePaper = async (paper: Paper) => {
     } else {
         showToast(t('paperSavedToArchive', lang), 'success');
     }
+
+    return savedPaperData as Paper;
 };
 
   const handleDeletePaper = async (id: string) => {
