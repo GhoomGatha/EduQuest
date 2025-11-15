@@ -31,12 +31,11 @@ const fetchFontAsBase64 = async (url: string): Promise<string> => {
   }
 };
 
-// Use raw.githubusercontent.com to fetch fonts directly from the Google Fonts GitHub repo.
-// The path has been updated to use the 'apache' directory instead of 'ofl',
-// reflecting the latest structure of the repository and fixing 404 errors.
-const NOTO_SANS_BENGALI_URL = 'https://raw.githubusercontent.com/google/fonts/main/apache/notosansbengali/NotoSansBengali-Regular.ttf';
-const NOTO_SANS_DEVANAGARI_URL = 'https://raw.githubusercontent.com/google/fonts/main/apache/notosansdevanagari/NotoSansDevanagari-Regular.ttf';
-const NOTO_SANS_KANNADA_URL = 'https://raw.githubusercontent.com/google/fonts/main/apache/notosanskannada/NotoSansKannada-Regular.ttf';
+// Use a reliable CDN (jsDelivr) to fetch fonts directly from the Google Fonts GitHub repo.
+// This is more robust than using raw.githubusercontent.com, which can be unreliable or blocked.
+const NOTO_SANS_BENGALI_URL = 'https://cdn.jsdelivr.net/gh/google/fonts@main/apache/notosansbengali/NotoSansBengali-Regular.ttf';
+const NOTO_SANS_DEVANAGARI_URL = 'https://cdn.jsdelivr.net/gh/google/fonts@main/apache/notosansdevanagari/NotoSansDevanagari-Regular.ttf';
+const NOTO_SANS_KANNADA_URL = 'https://cdn.jsdelivr.net/gh/google/fonts@main/apache/notosanskannada/NotoSansKannada-Regular.ttf';
 
 
 

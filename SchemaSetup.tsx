@@ -1,4 +1,5 @@
 
+
 import React, { useState } from 'react';
 
 interface SchemaSetupProps {
@@ -315,6 +316,10 @@ CREATE TABLE IF NOT EXISTS public.classrooms (
   invite_code text NOT NULL UNIQUE,
   created_at timestamptz DEFAULT now()
 );
+
+-- Add 'is_live' column for live sessions
+ALTER TABLE public.classrooms ADD COLUMN IF NOT EXISTS is_live boolean DEFAULT false;
+
 
 -- Enable RLS for classrooms and create policies
 ALTER TABLE public.classrooms ENABLE ROW LEVEL SECURITY;

@@ -159,12 +159,14 @@ export const generateQuestionsAI = async (
     questionType?: string;
     keywords?: string;
     generateAnswer?: boolean;
-    wbbseSyllabusOnly: boolean;
+    board: string;
     lang: Language;
     useSearchGrounding?: boolean;
     // New properties for batch paper generation
     paperStructure?: { count: number; marks: number; types: string[] }[];
     chapters?: string[];
+    // FIX: Add 'wbbseSyllabusOnly' to the criteria type to allow passing this option.
+    wbbseSyllabusOnly?: boolean;
   },
   existingQuestions: Question[],
   userApiKey?: string,
@@ -299,9 +301,18 @@ Return ONLY a single valid JSON object. Do not add any text before or after the 
             }).join('\n');
             const chaptersString = (criteria.chapters || []).map(c => `"${c}"`).join(', ');
             const shouldGenerateAnswer = criteria.generateAnswer;
-            const boardName = criteria.class >= 11 ? "WBCHSE" : "WBBSE";
-            const boardFullName = criteria.class >= 11 ? "West Bengal Council of Higher Secondary Education (WBCHSE)" : "West Bengal Board of Secondary Education (WBBSE)";
-            const syllabusInstruction = criteria.wbbseSyllabusOnly ? `You are an expert in creating question papers for the ${boardFullName} curriculum. **CRITICAL RULE: All questions MUST strictly adhere to the ${boardName} syllabus.**` : `You are an expert in creating question papers for the subject of ${criteria.subject}.`;
+
+            let syllabusInstruction: string;
+            const board = criteria.board;
+            if (board === 'CBSE') {
+                syllabusInstruction = `You are an expert in creating question papers for the CBSE curriculum, which strictly follows the NCERT syllabus. **CRITICAL RULE: All questions MUST strictly adhere to the NCERT syllabus.**`;
+            } else if (['WBBSE', 'WBCHSE'].includes(board)) {
+                const boardName = criteria.class >= 11 ? "WBCHSE" : "WBBSE";
+                const boardFullName = criteria.class >= 11 ? "West Bengal Council of Higher Secondary Education (WBCHSE)" : "West Bengal Board of Secondary Education (WBBSE)";
+                syllabusInstruction = `You are an expert in creating question papers for the ${boardFullName} curriculum. **CRITICAL RULE: All questions MUST strictly adhere to the ${boardName} syllabus.**`;
+            } else { // Generic for ICSE, ISC, etc.
+                syllabusInstruction = `You are an expert in creating question papers for the ${board} curriculum. **CRITICAL RULE: All questions MUST strictly adhere to the official ${board} syllabus for the specified class.**`;
+            }
 
             const prompt = `
                 ${syllabusInstruction}
@@ -378,9 +389,23 @@ Return ONLY a single valid JSON object. Do not add any text before or after the 
         }
 
         const keywordInstructions = criteria.keywords ? `The questions must incorporate or be related to the following keywords: ${criteria.keywords}.` : '';
-        const boardName = criteria.class >= 11 ? "WBCHSE" : "WBBSE";
-        const boardFullName = criteria.class >= 11 ? "West Bengal Council of Higher Secondary Education (WBCHSE)" : "West Bengal Board of Secondary Education (WBBSE)";
-        const syllabusInstruction = criteria.wbbseSyllabusOnly ? `You are an expert in creating question papers for the ${boardFullName} curriculum, specifically for Bengali Medium school students, for the subject of ${criteria.subject}.\nYour task is to generate ${criteria.count} unique, high-quality questions based on the criteria below.\n**CRITICAL RULE: The content of all questions and answers MUST strictly adhere to the topics, scope, and depth of the official ${boardName} ${criteria.subject} syllabus for the specified class. DO NOT include any content from other educational boards like CBSE, ICSE, etc.**` : `You are an expert in creating question papers for the subject of ${criteria.subject}. Your task is to generate ${criteria.count} unique, high-quality questions based on the criteria below.`;
+        
+        let syllabusInstruction: string;
+        const board = criteria.board;
+        if (board === 'CBSE') {
+            syllabusInstruction = `You are an expert in creating question papers for the CBSE curriculum, which strictly follows the NCERT syllabus for ${criteria.subject}.
+            **CRITICAL RULE: The content of all questions and answers MUST strictly adhere to the official NCERT syllabus for the specified class.**`;
+        } else if (['WBBSE', 'WBCHSE'].includes(board)) {
+            const boardName = criteria.class >= 11 ? "WBCHSE" : "WBBSE";
+            const boardFullName = criteria.class >= 11 ? "West Bengal Council of Higher Secondary Education (WBCHSE)" : "West Bengal Board of Secondary Education (WBBSE)";
+            syllabusInstruction = `You are an expert in creating question papers for the ${boardFullName} curriculum, specifically for Bengali Medium school students, for the subject of ${criteria.subject}.
+            **CRITICAL RULE: The content of all questions and answers MUST strictly adhere to the topics, scope, and depth of the official ${boardName} ${criteria.subject} syllabus for the specified class. DO NOT include any content from other educational boards like CBSE, ICSE, etc.**`;
+        } else { // Generic for ICSE, ISC, etc.
+            syllabusInstruction = `You are an expert in creating question papers for the ${board} curriculum for the subject of ${criteria.subject}.
+            **CRITICAL RULE: The content of all questions and answers MUST strictly adhere to the official ${board} syllabus for the specified class.**`;
+        }
+        syllabusInstruction += `\nYour task is to generate ${criteria.count} unique, high-quality questions based on the criteria below.`;
+
 
         const prompt = `
             ${syllabusInstruction}

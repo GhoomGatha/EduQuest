@@ -45,7 +45,8 @@ const MyClassrooms: React.FC<{
     lang: Language;
     showToast: (message: string, type?: 'success' | 'error') => void;
     onLeaveClick: (classroom: Classroom) => void;
-}> = ({ classrooms, onRefresh, lang, showToast, onLeaveClick }) => {
+    onJoinLiveClass: (classroom: Classroom) => void;
+}> = ({ classrooms, onRefresh, lang, showToast, onLeaveClick, onJoinLiveClass }) => {
     const { user } = useAuth();
     const [inviteCode, setInviteCode] = useState('');
     const [isJoining, setIsJoining] = useState(false);
@@ -89,19 +90,29 @@ const MyClassrooms: React.FC<{
                 {classrooms.length > 0 && (
                     <div className="space-y-3 mb-4">
                         {classrooms.map(c => (
-                            <div key={c.id} className="p-3 bg-slate-50 rounded-lg border flex flex-col sm:flex-row justify-between items-start sm:items-center">
+                            <div key={c.id} className="p-3 bg-slate-50 rounded-lg border flex flex-col sm:flex-row justify-between items-start">
                                 <div>
                                     <h4 className="font-bold text-slate-800">{c.name}</h4>
                                     <p className="text-sm text-slate-500">
                                         {c.teacher_profile?.full_name} &middot; Class {c.class_details.class} - {c.class_details.subject}
                                     </p>
                                 </div>
-                                <button
-                                    onClick={() => onLeaveClick(c)}
-                                    className="mt-2 sm:mt-0 text-xs font-semibold text-red-600 bg-red-100 hover:bg-red-200 px-3 py-1.5 rounded-md transition-colors"
-                                >
-                                    Leave
-                                </button>
+                                <div className="flex items-center gap-2 mt-2 sm:mt-0">
+                                    {c.is_live && (
+                                        <button
+                                            onClick={() => onJoinLiveClass(c)}
+                                            className="px-3 py-1.5 bg-red-500 text-white text-xs font-bold rounded-md hover:bg-red-600 flex items-center gap-1 animate-pulse"
+                                        >
+                                            <span className="text-sm">🔴</span> JOIN LIVE
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={() => onLeaveClick(c)}
+                                        className="text-xs font-semibold text-red-600 bg-red-100 hover:bg-red-200 px-3 py-1.5 rounded-md transition-colors"
+                                    >
+                                        Leave
+                                    </button>
+                                </div>
                             </div>
                         ))}
                     </div>
@@ -131,6 +142,7 @@ interface StudentClassroomProps {
     joinedClassrooms: Classroom[];
     onRefreshClassrooms: () => void;
     onStartTest: (paper: Paper, assignmentId: string) => void;
+    onJoinLiveClass: (classroom: Classroom) => void;
     lang: Language;
     showToast: (message: string, type?: 'success' | 'error') => void;
     queries: StudentQuery[];
@@ -143,6 +155,7 @@ const StudentClassroom: React.FC<StudentClassroomProps> = ({
     joinedClassrooms,
     onRefreshClassrooms,
     onStartTest,
+    onJoinLiveClass,
     lang,
     showToast,
     queries,
@@ -246,6 +259,7 @@ const StudentClassroom: React.FC<StudentClassroomProps> = ({
                     lang={lang} 
                     showToast={showToast}
                     onLeaveClick={setLeavingClassroom}
+                    onJoinLiveClass={onJoinLiveClass}
                 />
 
                 <section>

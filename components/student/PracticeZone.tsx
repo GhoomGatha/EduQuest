@@ -249,7 +249,7 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
             if (questionsToGenerate > 0 && selectedSubject) {
                 const { generatedQuestions } = await generateQuestionsAI({
                     class: studentClass, subject: selectedSubject, chapter: customChapter, marks: 3, difficulty: customDifficulty || Difficulty.Moderate,
-                    count: questionsToGenerate, generateAnswer: true, wbbseSyllabusOnly: true, lang: lang,
+                    count: questionsToGenerate, generateAnswer: true, board: board, lang: lang,
                 }, practiceQuestions, userApiKey, userOpenApiKey);
                 const newAiQuestions: Question[] = generatedQuestions.map((gq): Question => ({
                     id: `gen-${Date.now()}-${Math.random()}`, text: gq.text!, answer: gq.answer, marks: gq.marks || 3, difficulty: customDifficulty || Difficulty.Moderate,
@@ -286,7 +286,7 @@ const PracticeZone: React.FC<PracticeZoneProps> = ({ allQuestions, lang, onStart
                 count: mcqNumQuestions,
                 questionType: 'Multiple Choice',
                 generateAnswer: true,
-                wbbseSyllabusOnly: true,
+                board: board,
                 lang: lang,
             }, [], userApiKey, userOpenApiKey);
 

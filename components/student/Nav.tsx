@@ -1,5 +1,3 @@
-
-
 import React, { useRef, useState, useEffect } from 'react';
 import { StudentTab } from '../../types';
 import { STUDENT_TABS } from '../../constants';
@@ -45,9 +43,9 @@ const Nav: React.FC<NavProps> = ({ activeTab, onTabChange, lang }) => {
 
   return (
     // The nav itself no longer needs padding. The framing is handled by the parent Header.
-    <nav ref={navRef} className="relative flex justify-start sm:justify-center items-center bg-green-50 backdrop-blur-md p-1 rounded-full overflow-x-auto no-scrollbar">
+    <nav ref={navRef} className="relative flex justify-start sm:justify-center items-center bg-green-50/80 backdrop-blur-md p-1 rounded-full overflow-x-auto no-scrollbar">
       <div
-        className="absolute bg-white rounded-full h-10 shadow-md premium-tab-slider"
+        className="absolute bg-indigo-600 rounded-full h-10 shadow-lg premium-tab-slider"
         style={sliderStyle}
         aria-hidden="true"
       />
@@ -58,7 +56,7 @@ const Nav: React.FC<NavProps> = ({ activeTab, onTabChange, lang }) => {
           onClick={() => onTabChange(tab.id)}
           className={`relative z-10 flex-shrink-0 px-3 sm:px-4 py-2 text-sm font-semibold rounded-full transition-colors duration-300 flex items-center justify-center whitespace-nowrap ${
             activeTab === tab.id
-              ? 'text-green-700'
+              ? 'text-white'
               : 'text-slate-600 hover:text-slate-800'
           }`}
           aria-selected={activeTab === tab.id}

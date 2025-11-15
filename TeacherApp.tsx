@@ -1,8 +1,7 @@
-
 import React, { useState, useEffect, useCallback, useRef, lazy, Suspense, useMemo } from 'react';
 import { Question, Paper, Tab, Language, Profile, QuestionSource, Difficulty, Semester, UploadProgress, TutorSession, Classroom, StudentQuery } from './types';
 import { t } from './utils/localization';
-import { TABS, LOCAL_STORAGE_KEY, API_KEY_STORAGE_KEY, LANGUAGE_STORAGE_KEY, OPENAI_API_KEY_STORAGE_KEY } from './constants';
+import { TABS, LOCAL_STORAGE_KEY, API_KEY_STORAGE_KEY, LANGUAGE_STORAGE_KEY, OPENAI_API_KEY_STORAGE_KEY, TEACHER_CURRICULUM_PREFS_KEY } from './constants';
 import Modal from './components/Modal';
 import QuestionForm from './components/QuestionForm';
 import { useAuth } from './hooks/useAuth';
@@ -93,6 +92,35 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
   const [viewingPaper, setViewingPaper] = useState<Paper | null>(null);
   const [viewingSession, setViewingSession] = useState<TutorSession | null>(null);
   const [assignmentModalState, setAssignmentModalState] = useState<{ paper?: Paper; classroom?: Classroom } | null>(null);
+
+  // Lifted curriculum state
+  const [board, setBoard] = useState(() => {
+    try {
+        const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
+        return saved ? JSON.parse(saved).board || 'WBBSE' : 'WBBSE';
+    } catch { return 'WBBSE'; }
+  });
+  const [selectedClass, setSelectedClass] = useState(() => {
+    try {
+        const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
+        return saved ? JSON.parse(saved).class || 10 : 10;
+    } catch { return 10; }
+  });
+  const [selectedSubject, setSelectedSubject] = useState(() => {
+      try {
+          const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
+          return saved ? JSON.parse(saved).subject || '' : '';
+      } catch { return ''; }
+  });
+
+  useEffect(() => {
+    try {
+        const prefs = { board, class: selectedClass, subject: selectedSubject };
+        localStorage.setItem(TEACHER_CURRICULUM_PREFS_KEY, JSON.stringify(prefs));
+    } catch (e) {
+        console.warn("Could not save curriculum preferences in TeacherApp", e);
+    }
+}, [board, selectedClass, selectedSubject]);
 
 
   const allVisibleQuestions = useMemo(() => {
@@ -188,8 +216,15 @@ const TeacherApp: React.FC<TeacherAppProps> = ({ showToast }) => {
     
     const tutorSub = supabase.channel('public:tutor_sessions')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'tutor_sessions', filter: `user_id=eq.${session.user.id}` }, payload => {
-            if (payload.eventType === 'INSERT') setTutorSessions(s => [payload.new as TutorSession, ...s]);
-            if (payload.eventType === 'DELETE') setTutorSessions(s => s.filter(se => se.id !== (payload.old as TutorSession).id));
+            if (payload.eventType === 'INSERT') {
+                setTutorSessions(s => [payload.new as TutorSession, ...s.filter(item => item.id !== (payload.new as TutorSession).id)]);
+            }
+            if (payload.eventType === 'UPDATE') {
+                setTutorSessions(s => s.map(item => item.id === (payload.new as TutorSession).id ? payload.new as TutorSession : item));
+            }
+            if (payload.eventType === 'DELETE') {
+                setTutorSessions(s => s.filter(item => item.id !== (payload.old as TutorSession).id));
+            }
         }).subscribe();
     
     const classroomsSub = supabase.channel('public:classrooms')
@@ -348,7 +383,9 @@ const handleSavePaper = async (paper: Paper): Promise<Paper | void> => {
         showToast(t('paperSavedToArchive', lang), 'success');
     }
 
-    return savedPaperData as Paper;
+    if (savedPaperData) {
+        return savedPaperData as Paper;
+    }
 };
 
   const handleDeletePaper = async (id: string) => {
@@ -555,8 +592,22 @@ const handleSavePaper = async (paper: Paper): Promise<Paper | void> => {
         if (error || !data) throw error ?? new Error('No data from profile update');
         setProfile(data);
         showToast('Profile updated!', 'success');
-    } catch (err: any) {
-        showToast(err.message, 'error');
+    } catch (err: unknown) {
+        let message = 'An unknown error occurred while updating profile.';
+        if (err instanceof Error) {
+            message = err.message;
+        } else if (err && typeof err === 'object' && 'message' in err) {
+            message = String((err as { message: unknown }).message);
+        } else if (typeof err === 'string') {
+            message = err;
+        }
+        
+        if (message.toLowerCase().includes('failed to fetch')) {
+            message = "Network Error: Could not upload image. Please check your internet connection or Supabase storage CORS settings.";
+        }
+
+        console.error("Error updating profile:", err);
+        showToast(message, 'error');
         throw err;
     }
   };
@@ -610,10 +661,30 @@ const handleSavePaper = async (paper: Paper): Promise<Paper | void> => {
   const handleRemoveOpenApiKey = () => { setUserOpenApiKey(''); localStorage.removeItem(OPENAI_API_KEY_STORAGE_KEY); showToast('OpenAI API Key removed.', 'error'); };
   
   const handleSaveTutorResponse = async (queryText: string, queryImageUrl: string | null, responseText: string, responseImageUrl: string | undefined, tutorClass: number) => {
-    if (!session?.user) return;
-    const { error } = await supabase.from('tutor_sessions').insert({ user_id: session.user.id, query_text: queryText, query_image_url: queryImageUrl, response_text: responseText, response_image_url: responseImageUrl, tutor_class: tutorClass });
-    if (error) showToast("Failed to save session.", 'error');
-    else showToast("Session saved!", 'success');
+    if (!session?.user) {
+        showToast("You must be logged in to save sessions.", "error");
+        return;
+    }
+    const { data, error } = await supabase
+        .from('tutor_sessions')
+        .insert({
+            user_id: session.user.id,
+            query_text: queryText,
+            query_image_url: queryImageUrl,
+            response_text: responseText,
+            response_image_url: responseImageUrl,
+            tutor_class: tutorClass
+        })
+        .select()
+        .single();
+    
+    if (error || !data) {
+        console.error("Error saving tutor session:", error?.message || "No data returned");
+        showToast("Failed to save tutor session.", 'error');
+    } else {
+        setTutorSessions(prev => [data, ...prev]);
+        showToast("Session saved!", 'success');
+    }
   };
 
   const handleDeleteSession = async (sessionId: string) => {
@@ -626,7 +697,7 @@ const handleSavePaper = async (paper: Paper): Promise<Paper | void> => {
   const renderContent = () => {
     switch (activeTab) {
       case 'bank': return <QuestionBank questions={allVisibleQuestions} onAddQuestion={() => handleOpenModal()} onEditQuestion={handleOpenModal} onDeleteQuestion={handleDeleteQuestion} lang={lang} showToast={showToast} />;
-      case 'generator': return <PaperGenerator questions={questions} onSavePaper={handleSavePaper} lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} />;
+      case 'generator': return <PaperGenerator questions={questions} onSavePaper={handleSavePaper} lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} board={board} setBoard={setBoard} selectedClass={selectedClass} setSelectedClass={setSelectedClass} selectedSubject={selectedSubject} setSelectedSubject={setSelectedSubject} />;
       case 'ai_tutor': return <AITutor lang={lang} showToast={showToast} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} sessions={tutorSessions} onSaveResponse={handleSaveTutorResponse} onDeleteSession={handleDeleteSession} viewingSession={viewingSession} setViewingSession={setViewingSession} />;
       case 'archive': return <ExamArchive papers={papers} onDeletePaper={handleDeletePaper} onUploadPaper={onUploadPaper} onProcessPaper={onProcessPaper} lang={lang} showToast={showToast} viewingPaper={viewingPaper} setViewingPaper={setViewingPaper} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} onAssignPaper={handleOpenAssignModalWithPaper} />;
       case 'test_papers': return <FinalExamPapers lang={lang} userApiKey={userApiKey} userOpenApiKey={userOpenApiKey} showToast={showToast} onSavePaper={handleSavePaper} />;
@@ -638,7 +709,7 @@ const handleSavePaper = async (paper: Paper): Promise<Paper | void> => {
 
   return (
     <>
-      <header className="bg-green-200/50 backdrop-blur-xl shadow-sm sticky top-0 z-40 border-b border-white/30">
+      <header className="bg-green-200/75 backdrop-blur-xl shadow-sm sticky top-0 z-40 border-b border-white/30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="flex justify-between items-center py-4">
               <div>
@@ -649,6 +720,11 @@ const handleSavePaper = async (paper: Paper): Promise<Paper | void> => {
                     <span className="font-serif-display animate-text-color-cycle">{t('appHeaderText', lang)}</span>
                 </h1>
                 <p className="text-sm text-slate-500">{t('appSubtitle', lang)}</p>
+                {activeTab === 'generator' && selectedSubject && (
+                    <p className="text-xs text-indigo-700 font-semibold mt-1 bg-indigo-100 px-2 py-1 rounded-md inline-block">
+                        Editing: Class {selectedClass} - {selectedSubject}
+                    </p>
+                )}
               </div>
               <div className="flex items-center space-x-3">
                 <LiveClock />
@@ -656,11 +732,11 @@ const handleSavePaper = async (paper: Paper): Promise<Paper | void> => {
               </div>
             </div>
             <div className="my-2 p-[1.5px] rounded-full animate-background-color-cycle">
-                <nav ref={navRef} className="relative flex justify-start sm:justify-center items-center bg-green-50 backdrop-blur-md p-1 rounded-full overflow-x-auto no-scrollbar">
-                    <div className="absolute bg-white rounded-full h-10 shadow-md premium-tab-slider" style={sliderStyle} aria-hidden="true" />
+                <nav ref={navRef} className="relative flex justify-start sm:justify-center items-center bg-green-50/80 backdrop-blur-md p-1 rounded-full overflow-x-auto no-scrollbar">
+                    <div className="absolute bg-indigo-600 rounded-full h-10 shadow-lg premium-tab-slider" style={sliderStyle} aria-hidden="true" />
                     {TABS.map(tab => (
                         <button key={tab.id} data-tab-id={tab.id} onClick={() => setActiveTab(tab.id)}
-                            className={`relative z-10 flex-shrink-0 px-3 sm:px-4 py-2 text-sm font-semibold rounded-full transition-colors duration-300 flex items-center justify-center whitespace-nowrap ${activeTab === tab.id ? 'text-indigo-700' : 'text-slate-600 hover:text-slate-800'}`}
+                            className={`relative z-10 flex-shrink-0 px-3 sm:px-4 py-2 text-sm font-semibold rounded-full transition-colors duration-300 flex items-center justify-center whitespace-nowrap ${activeTab === tab.id ? 'text-white' : 'text-slate-600 hover:text-slate-800'}`}
                             aria-selected={activeTab === tab.id}>
                             <span className={`mr-2 text-lg ${activeTab === tab.id ? tabIconAnimations[tab.id] : ''}`}>{tab.icon}</span>
                             {t(tab.id, lang)}

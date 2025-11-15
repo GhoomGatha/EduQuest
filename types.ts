@@ -3,6 +3,7 @@
 
 
 
+
 export enum Difficulty {
   Easy = 'Easy',
   Moderate = 'Moderate',
@@ -181,6 +182,7 @@ export type ViewState =
     | { view: 'settings' }
     | { view: 'test_papers' }
     | { view: 'classroom' }
+    | { view: 'live_class'; classroom: Classroom }
     | { view: 'test'; paper: Paper; assignmentId?: string };
 
 // Unified type for activity feeds
@@ -231,6 +233,7 @@ export interface Classroom {
   created_at: string;
   student_count?: number; // from an aggregate query
   teacher_profile?: Profile;
+  is_live?: boolean;
 }
 
 export interface ClassroomStudent {
@@ -248,6 +251,17 @@ export interface Assignment {
   due_date: string;
   time_limit_minutes: number;
   created_at: string;
+}
+
+export interface AssignmentSubmission {
+  id: string; // uuid
+  created_at: string;
+  assignment_id: string; // uuid
+  student_id: string; // uuid
+  teacher_id: string; // uuid
+  attempt_data: TestAttempt;
+  // Joined data
+  student_profile?: Pick<Profile, 'full_name' | 'avatar_url'>;
 }
 
 export interface StudentQuery {

@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, ChangeEvent, useRef, useEffect, useCallback } from 'react';
 import { Paper, QuestionSource, Semester, UploadProgress, Language, Question, Classroom } from '../types';
 import { t } from '../utils/localization';
@@ -356,15 +355,15 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
             if (error instanceof Error) {
                 actualErrorMessage = error.message;
             } else if (typeof error === 'object' && error !== null && 'message' in error) {
-                actualErrorMessage = String(error.message);
+                actualErrorMessage = String((error as { message: unknown }).message);
             }
             
             if (actualErrorMessage.includes('Auth') || actualErrorMessage.includes('JWT') || actualErrorMessage.includes('permission denied')) {
                 actualErrorMessage += ". This often indicates incorrect Supabase Storage policies or an invalid API key.";
             } else if (actualErrorMessage.includes('CORS')) {
                 actualErrorMessage += ". Please check your Supabase Storage bucket's CORS configuration.";
-            } else if (actualErrorMessage.includes('Failed to fetch') || actualErrorMessage.includes('Network request failed')) {
-                 actualErrorMessage = "Network error: Could not reach the server. Please check your internet connection, disable any ad-blockers, or try again later.";
+            } else if (actualErrorMessage.toLowerCase().includes('failed to fetch') || actualErrorMessage.includes('Network request failed')) {
+                 actualErrorMessage = "Network error: Could not connect to the server. Please check your internet connection or disable any ad-blockers. For file uploads, this can also be caused by incorrect CORS settings on your Supabase storage bucket.";
             }
 
             const progressWithError = {
@@ -666,6 +665,7 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
     const types = viewingPaper.file_types || (viewingPaper.file_type ? [viewingPaper.file_type] : []);
 
     const hasContentToExport = (viewingPaper.questions && viewingPaper.questions.length > 0) || viewingPaper.text;
+    const questionsWithAnswers = viewingPaper.questions.filter(q => q.answer);
 
     return (
       <>
@@ -685,11 +685,30 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
           )}
 
           {viewingPaper.text && <div className="bg-slate-50 p-4 rounded-lg border mb-4"><MarkdownRenderer content={viewingPaper.text} /></div>}
-          {viewingPaper.questions.length > 0 && <div className="space-y-4 prose max-w-none prose-slate">{viewingPaper.questions.map((q, i) => (
-            <div key={q.id}>
-                {q.image_data_url && <img src={q.image_data_url} alt="Question" className="max-w-md mx-auto rounded-lg border my-2" />}
-                <p><strong>{i + 1}.</strong> {q.text} <span className="text-sm text-slate-500">({q.marks} ${t('marks', lang)})</span></p>
-            </div>))}</div>}
+          
+          {viewingPaper.questions.length > 0 && (
+            <div className="space-y-4 prose max-w-none prose-slate">
+                {viewingPaper.questions.map((q, i) => (
+                    <div key={q.id}>
+                        {q.image_data_url && <img src={q.image_data_url} alt="Question" className="max-w-md mx-auto rounded-lg border my-2" />}
+                        <p><strong>{i + 1}.</strong> {q.text} <span className="text-sm text-slate-500">({q.marks} ${t('marks', lang)})</span></p>
+                    </div>
+                ))}
+            </div>
+          )}
+
+          {questionsWithAnswers.length > 0 && (
+            <div className="mt-8 pt-4 border-t border-slate-200">
+                <h3 className="text-lg font-bold font-serif-display text-slate-800 mb-3">{t('answerKey', lang)}</h3>
+                <div className="prose max-w-none prose-slate space-y-2">
+                    {viewingPaper.questions.map((q, index) => (
+                        q.answer ? (
+                            <p key={`ans-${q.id}`}><strong>{index + 1}.</strong> {q.answer}</p>
+                        ) : null
+                    ))}
+                </div>
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap justify-end gap-3 pt-4 mt-4 border-t border-slate-200">
           {hasContentToExport && (

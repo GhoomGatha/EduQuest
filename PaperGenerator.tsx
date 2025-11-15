@@ -1,8 +1,9 @@
+
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Paper, Question, QuestionSource, Difficulty, Semester, GroundingSource, Language } from '../types';
 import { t } from '../utils/localization';
 import { generateQuestionsAI, getChaptersAI, getSubjectsAI } from '../services/geminiService';
-import { CLASSES, YEARS, SEMESTERS, BOARDS, MARKS, TEACHER_CURRICULUM_PREFS_KEY } from '../constants';
+import { CLASSES, YEARS, SEMESTERS, BOARDS, MARKS } from '../constants';
 import { useHistory } from '../hooks/useHistory';
 import Modal from './Modal';
 import { getBengaliFontBase64, getDevanagariFontBase64, getKannadaFontBase64 } from '../utils/fontData';
@@ -32,9 +33,6 @@ interface GeneratorSettings {
 interface PaperGeneratorDraft {
     title: string;
     year: number;
-    board: string;
-    selectedClass: number;
-    selectedSubject: string;
     semester: Semester;
     avoidPrevious: boolean;
     distribution: MarkDistributionRow[];
@@ -54,6 +52,12 @@ interface PaperGeneratorProps {
     showToast: (message: string, type?: 'success' | 'error') => void;
     userApiKey?: string;
     userOpenApiKey?: string;
+    board: string;
+    setBoard: (board: string) => void;
+    selectedClass: number;
+    setSelectedClass: (c: number) => void;
+    selectedSubject: string;
+    setSelectedSubject: (s: string) => void;
 }
 
 const AnimatedHeader = ({ emoji, animation, title }: { emoji: string; animation: string; title: string; }) => {
@@ -90,27 +94,12 @@ const AnimatedHeader = ({ emoji, animation, title }: { emoji: string; animation:
     );
 };
 
-const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper, lang, showToast, userApiKey, userOpenApiKey }) => {
+const PaperGenerator: React.FC<PaperGeneratorProps> = ({ 
+    questions, onSavePaper, lang, showToast, userApiKey, userOpenApiKey,
+    board, setBoard, selectedClass, setSelectedClass, selectedSubject, setSelectedSubject
+}) => {
     const [title, setTitle] = useState('');
     const [year, setYear] = useState(new Date().getFullYear());
-    const [board, setBoard] = useState(() => {
-        try {
-            const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
-            return saved ? JSON.parse(saved).board || 'WBBSE' : 'WBBSE';
-        } catch { return 'WBBSE'; }
-    });
-    const [selectedClass, setClass] = useState(() => {
-        try {
-            const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
-            return saved ? JSON.parse(saved).class || 10 : 10;
-        } catch { return 10; }
-    });
-    const [selectedSubject, setSelectedSubject] = useState(() => {
-        try {
-            const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
-            return saved ? JSON.parse(saved).subject || '' : '';
-        } catch { return ''; }
-    });
     const [semester, setSemester] = useState<Semester>(Semester.First);
     const [avoidPrevious, setAvoidPrevious] = useState(true);
     const [isGenerating, setIsGenerating] = useState(false);
@@ -172,22 +161,6 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         localStorage.setItem(WBBSE_SYLLABUS_KEY, JSON.stringify(settings.wbbseSyllabusOnly));
     }, [settings.wbbseSyllabusOnly]);
 
-    // Persist curriculum changes to local storage to be shared across components.
-    useEffect(() => {
-        try {
-            const currentPrefs = JSON.parse(localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY) || '{}');
-            const newPrefs = {
-                ...currentPrefs,
-                board,
-                class: selectedClass,
-                subject: selectedSubject,
-            };
-            localStorage.setItem(TEACHER_CURRICULUM_PREFS_KEY, JSON.stringify(newPrefs));
-        } catch (e) {
-            console.warn("Could not save curriculum preferences in PaperGenerator", e);
-        }
-    }, [board, selectedClass, selectedSubject]);
-
     const availableClasses = useMemo(() => {
         switch (board) {
             case 'WBBSE':
@@ -204,30 +177,27 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
 
     useEffect(() => {
         if (!availableClasses.includes(selectedClass)) {
-            setClass(availableClasses[0]);
+            setSelectedClass(availableClasses[0]);
         }
-    }, [availableClasses, selectedClass]);
+    }, [availableClasses, selectedClass, setSelectedClass]);
 
     const stableShowToast = useCallback(showToast, []);
 
     useEffect(() => {
         setLoadingSubjects(true);
         setSubjectsList([]);
-        // Don't reset selectedSubject here if it might be valid
         
         getSubjectsAI(board, selectedClass, lang, userApiKey, userOpenApiKey)
             .then(subjects => {
                 setSubjectsList(subjects);
                 
-                // If the currently selected subject is no longer in the list, update it.
+                // If the currently selected subject is no longer in the list (e.g., after changing class),
+                // update it to the first available subject to avoid an invalid state.
                 if (!subjects.includes(selectedSubject)) {
-                    const preferredSubject = subjects.find(s => s.toLowerCase().includes('biology') || s.toLowerCase().includes('life science'));
-                    if (preferredSubject) {
-                        setSelectedSubject(preferredSubject);
-                    } else if (subjects.length > 0) {
+                    if (subjects.length > 0) {
                         setSelectedSubject(subjects[0]);
                     } else {
-                        setSelectedSubject(''); // No subjects available
+                        setSelectedSubject('');
                     }
                 }
             })
@@ -238,8 +208,6 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             .finally(() => {
                 setLoadingSubjects(false);
             });
-    // The dependency on selectedSubject is removed to prevent re-fetching when the user just selects a subject.
-    // It's added back to the logic inside to handle cases where it becomes invalid.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [board, selectedClass, lang, stableShowToast, userApiKey, userOpenApiKey]);
 
@@ -303,13 +271,16 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
             setIsDraftLoaded(true);
             stableShowToast(t('draftLoaded', lang));
         }
+    // The dependency array is correct; we don't want to re-load the draft when curriculum state changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [resetSettings]);
+    }, [lang, stableShowToast, resetSettings]);
 
     useEffect(() => {
         const intervalId = setInterval(() => {
             if (draftStateRef.current) {
-                localStorage.setItem(PAPER_GENERATOR_DRAFT_KEY, JSON.stringify(draftStateRef.current));
+                // The draft no longer saves board, class, or subject.
+                const { board, selectedClass, selectedSubject, ...draftToSave } = draftStateRef.current as any;
+                localStorage.setItem(PAPER_GENERATOR_DRAFT_KEY, JSON.stringify(draftToSave));
             }
         }, 30000); // Auto-save every 30 seconds
 
@@ -319,13 +290,10 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
     const draftData: PaperGeneratorDraft = {
         title,
         year,
-        board,
-        selectedClass,
-        selectedSubject,
         semester,
         avoidPrevious,
         ...settings,
-    };
+    } as PaperGeneratorDraft;
     draftStateRef.current = draftData;
     
     const handleQuestionTypeChange = (type: string) => {
@@ -333,16 +301,16 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         const newTypes = isAdding
             ? [...settings.aiQuestionType, type]
             : settings.aiQuestionType.filter(t => t !== type);
-
+    
         const requiresAnswer = ['Multiple Choice', 'Fill in the Blanks', 'True/False', 'Odd Man Out', 'Matching'].includes(type);
-        
+    
         let newGenerateAnswers = settings.aiGenerateAnswers;
         if (isAdding && requiresAnswer) {
             // If a type that requires an answer is added, automatically enable answer generation.
             // We avoid automatically disabling it to respect a user's manual choice for other types like Short Answer.
             newGenerateAnswers = true;
         }
-        
+    
         setSettings({ ...settings, aiQuestionType: newTypes, aiGenerateAnswers: newGenerateAnswers });
     };
 
@@ -481,6 +449,8 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                         class: selectedClass, subject: selectedSubject, chapters: settings.aiChapters, difficulty: settings.aiDifficulty,
                         paperStructure: textPaperStructure,
                         keywords: settings.aiKeywords, generateAnswer: settings.aiGenerateAnswers,
+                        // FIX: Add missing 'board' property to the generateQuestionsAI call.
+                        board: board,
                         wbbseSyllabusOnly: settings.wbbseSyllabusOnly, lang: lang, useSearchGrounding: settings.useSearchGrounding,
                     }, existingQuestionPool, userApiKey, userOpenApiKey, signal);
 
@@ -504,6 +474,8 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                             class: selectedClass, subject: selectedSubject, chapter: settings.aiChapters[0], marks,
                             difficulty: settings.aiDifficulty, count: count, questionType: 'Image-based',
                             keywords: settings.aiKeywords, generateAnswer: settings.aiGenerateAnswers,
+                            // FIX: Add missing 'board' property to the generateQuestionsAI call for image-based questions.
+                            board: board,
                             wbbseSyllabusOnly: settings.wbbseSyllabusOnly, lang: lang,
                         }, existingQuestionPool, userApiKey, userOpenApiKey, signal);
                     });
@@ -606,7 +578,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         setTitle('');
         setYear(new Date().getFullYear());
         setBoard('WBBSE');
-        setClass(10);
+        setSelectedClass(10);
         setSelectedSubject('');
         setSemester(Semester.First);
         setAvoidPrevious(true);
@@ -1031,7 +1003,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                         </div>
                          <div className="flex-1 min-w-[80px]">
                             <label htmlFor="class" className={labelStyles}>{t('class', lang)}</label>
-                            <select id="class" value={selectedClass} onChange={e => setClass(parseInt(e.target.value))} className={inputStyles}>
+                            <select id="class" value={selectedClass} onChange={e => setSelectedClass(parseInt(e.target.value))} className={inputStyles}>
                                 {availableClasses.map(c => <option key={c} value={c}>{c}</option>)}
                             </select>
                         </div>

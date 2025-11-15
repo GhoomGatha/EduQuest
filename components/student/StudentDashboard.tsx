@@ -1,4 +1,3 @@
-
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { Paper, TestAttempt, PracticeSuggestion, QuestionSource, Semester, Question, Difficulty, StudyMaterial, Flashcard, ActivityItem, TutorSession, ViewState, Assignment, Classroom, Language } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
@@ -144,8 +143,18 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ papers, attempts, l
     const [generatingPractice, setGeneratingPractice] = useState<string | null>(null);
     const [studyMaterials, setStudyMaterials] = useState<StudyMaterial[]>([]);
     const [loadingMaterials, setLoadingMaterials] = useState(true);
+    const [board, setBoard] = useState<string>('WBBSE');
 
     useEffect(() => {
+        try {
+            const savedPrefsRaw = localStorage.getItem('eduquest_student_curriculum_prefs');
+            if (savedPrefsRaw) {
+                const savedPrefs = JSON.parse(savedPrefsRaw);
+                if (savedPrefs.board) setBoard(savedPrefs.board);
+            }
+        } catch (e) { console.warn("Could not load curriculum prefs from localStorage", e); }
+
+
         const fetchSuggestions = async () => {
             const analyzedAttempts = attempts.filter(a => a.analysis);
             if (analyzedAttempts.length > 0) {
@@ -248,7 +257,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ papers, attempts, l
                 difficulty: 'Moderate',
                 count: 5,
                 generateAnswer: true,
-                wbbseSyllabusOnly: true,
+                board: board,
                 lang: lang
             }, [], userApiKey, userOpenApiKey);
             

@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Paper, Question, QuestionSource, Difficulty, Semester, GroundingSource, Language } from '../types';
 import { t } from '../utils/localization';
 import { generateQuestionsAI, getChaptersAI, getSubjectsAI } from '../services/geminiService';
-import { CLASSES, YEARS, SEMESTERS, BOARDS, MARKS, TEACHER_CURRICULUM_PREFS_KEY } from '../constants';
+import { CLASSES, YEARS, SEMESTERS, BOARDS, MARKS } from '../constants';
 import { useHistory } from '../hooks/useHistory';
 import Modal from './Modal';
 import { getBengaliFontBase64, getDevanagariFontBase64, getKannadaFontBase64 } from '../utils/fontData';
@@ -33,9 +33,6 @@ interface GeneratorSettings {
 interface PaperGeneratorDraft {
     title: string;
     year: number;
-    board: string;
-    selectedClass: number;
-    selectedSubject: string;
     semester: Semester;
     avoidPrevious: boolean;
     distribution: MarkDistributionRow[];
@@ -55,6 +52,12 @@ interface PaperGeneratorProps {
     showToast: (message: string, type?: 'success' | 'error') => void;
     userApiKey?: string;
     userOpenApiKey?: string;
+    board: string;
+    setBoard: (board: string) => void;
+    selectedClass: number;
+    setSelectedClass: (c: number) => void;
+    selectedSubject: string;
+    setSelectedSubject: (s: string) => void;
 }
 
 const AnimatedHeader = ({ emoji, animation, title }: { emoji: string; animation: string; title: string; }) => {
@@ -91,27 +94,12 @@ const AnimatedHeader = ({ emoji, animation, title }: { emoji: string; animation:
     );
 };
 
-const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper, lang, showToast, userApiKey, userOpenApiKey }) => {
+const PaperGenerator: React.FC<PaperGeneratorProps> = ({ 
+    questions, onSavePaper, lang, showToast, userApiKey, userOpenApiKey,
+    board, setBoard, selectedClass, setSelectedClass, selectedSubject, setSelectedSubject
+}) => {
     const [title, setTitle] = useState('');
     const [year, setYear] = useState(new Date().getFullYear());
-    const [board, setBoard] = useState(() => {
-        try {
-            const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
-            return saved ? JSON.parse(saved).board || 'WBBSE' : 'WBBSE';
-        } catch { return 'WBBSE'; }
-    });
-    const [selectedClass, setClass] = useState(() => {
-        try {
-            const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
-            return saved ? JSON.parse(saved).class || 10 : 10;
-        } catch { return 10; }
-    });
-    const [selectedSubject, setSelectedSubject] = useState(() => {
-        try {
-            const saved = localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY);
-            return saved ? JSON.parse(saved).subject || '' : '';
-        } catch { return ''; }
-    });
     const [semester, setSemester] = useState<Semester>(Semester.First);
     const [avoidPrevious, setAvoidPrevious] = useState(true);
     const [isGenerating, setIsGenerating] = useState(false);
@@ -173,22 +161,6 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         localStorage.setItem(WBBSE_SYLLABUS_KEY, JSON.stringify(settings.wbbseSyllabusOnly));
     }, [settings.wbbseSyllabusOnly]);
 
-    // Persist curriculum changes to local storage to be shared across components.
-    useEffect(() => {
-        try {
-            const currentPrefs = JSON.parse(localStorage.getItem(TEACHER_CURRICULUM_PREFS_KEY) || '{}');
-            const newPrefs = {
-                ...currentPrefs,
-                board,
-                class: selectedClass,
-                subject: selectedSubject,
-            };
-            localStorage.setItem(TEACHER_CURRICULUM_PREFS_KEY, JSON.stringify(newPrefs));
-        } catch (e) {
-            console.warn("Could not save curriculum preferences in PaperGenerator", e);
-        }
-    }, [board, selectedClass, selectedSubject]);
-
     const availableClasses = useMemo(() => {
         switch (board) {
             case 'WBBSE':
@@ -205,9 +177,9 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
 
     useEffect(() => {
         if (!availableClasses.includes(selectedClass)) {
-            setClass(availableClasses[0]);
+            setSelectedClass(availableClasses[0]);
         }
-    }, [availableClasses, selectedClass]);
+    }, [availableClasses, selectedClass, setSelectedClass]);
 
     const stableShowToast = useCallback(showToast, []);
 
@@ -307,7 +279,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         const intervalId = setInterval(() => {
             if (draftStateRef.current) {
                 // The draft no longer saves board, class, or subject.
-                const { board, selectedClass, selectedSubject, ...draftToSave } = draftStateRef.current;
+                const { board, selectedClass, selectedSubject, ...draftToSave } = draftStateRef.current as any;
                 localStorage.setItem(PAPER_GENERATOR_DRAFT_KEY, JSON.stringify(draftToSave));
             }
         }, 30000); // Auto-save every 30 seconds
@@ -318,13 +290,10 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
     const draftData: PaperGeneratorDraft = {
         title,
         year,
-        board,
-        selectedClass,
-        selectedSubject,
         semester,
         avoidPrevious,
         ...settings,
-    };
+    } as PaperGeneratorDraft;
     draftStateRef.current = draftData;
     
     const handleQuestionTypeChange = (type: string) => {
@@ -480,6 +449,8 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                         class: selectedClass, subject: selectedSubject, chapters: settings.aiChapters, difficulty: settings.aiDifficulty,
                         paperStructure: textPaperStructure,
                         keywords: settings.aiKeywords, generateAnswer: settings.aiGenerateAnswers,
+                        // FIX: Add missing 'board' property to the generateQuestionsAI call.
+                        board: board,
                         wbbseSyllabusOnly: settings.wbbseSyllabusOnly, lang: lang, useSearchGrounding: settings.useSearchGrounding,
                     }, existingQuestionPool, userApiKey, userOpenApiKey, signal);
 
@@ -503,6 +474,8 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                             class: selectedClass, subject: selectedSubject, chapter: settings.aiChapters[0], marks,
                             difficulty: settings.aiDifficulty, count: count, questionType: 'Image-based',
                             keywords: settings.aiKeywords, generateAnswer: settings.aiGenerateAnswers,
+                            // FIX: Add missing 'board' property to the generateQuestionsAI call for image-based questions.
+                            board: board,
                             wbbseSyllabusOnly: settings.wbbseSyllabusOnly, lang: lang,
                         }, existingQuestionPool, userApiKey, userOpenApiKey, signal);
                     });
@@ -537,6 +510,8 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                 const savedPaper = await onSavePaper(paper);
                 if (savedPaper) {
                     setGeneratedPaper(savedPaper);
+                } else {
+                    setGeneratedPaper(paper);
                 }
             } else {
                 const result = generateFromBank(distribution);
@@ -547,6 +522,8 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                     const savedPaper = await onSavePaper(paper);
                      if (savedPaper) {
                         setGeneratedPaper(savedPaper);
+                    } else {
+                        setGeneratedPaper(paper);
                     }
                 }
             }
@@ -587,6 +564,8 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                     const savedPaper = await onSavePaper(paper);
                     if (savedPaper) {
                         setGeneratedPaper(savedPaper);
+                    } else {
+                        setGeneratedPaper(paper);
                     }
                 }
             }
@@ -602,7 +581,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
     };
     
     const handleSaveDraft = () => {
-        const { board, selectedClass, selectedSubject, ...draftToSave } = draftData;
+        const { board, selectedClass, selectedSubject, ...draftToSave } = draftStateRef.current as any;
         localStorage.setItem(PAPER_GENERATOR_DRAFT_KEY, JSON.stringify(draftToSave));
         showToast(t('draftSaved', lang));
     };
@@ -611,6 +590,9 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
         localStorage.removeItem(PAPER_GENERATOR_DRAFT_KEY);
         setTitle('');
         setYear(new Date().getFullYear());
+        setBoard('WBBSE');
+        setSelectedClass(10);
+        setSelectedSubject('');
         setSemester(Semester.First);
         setAvoidPrevious(true);
         resetSettings({
@@ -1034,7 +1016,7 @@ const PaperGenerator: React.FC<PaperGeneratorProps> = ({ questions, onSavePaper,
                         </div>
                          <div className="flex-1 min-w-[80px]">
                             <label htmlFor="class" className={labelStyles}>{t('class', lang)}</label>
-                            <select id="class" value={selectedClass} onChange={e => setClass(parseInt(e.target.value))} className={inputStyles}>
+                            <select id="class" value={selectedClass} onChange={e => setSelectedClass(parseInt(e.target.value))} className={inputStyles}>
                                 {availableClasses.map(c => <option key={c} value={c}>{c}</option>)}
                             </select>
                         </div>

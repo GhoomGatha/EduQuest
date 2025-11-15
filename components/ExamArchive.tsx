@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, ChangeEvent, useRef, useEffect, useCallback } from 'react';
 import { Paper, QuestionSource, Semester, UploadProgress, Language, Question, Classroom } from '../types';
 import { t } from '../utils/localization';
@@ -318,6 +319,23 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
     const firstFile = files[0];
     const titleToUse = uploadData.title.trim() || ((firstFile as File).name.split('.').slice(0, -1).join('.') || (firstFile as File).name);
 
+    const isDuplicate = papers.some(
+        (paper) =>
+            paper.title.toLowerCase() === titleToUse.toLowerCase() &&
+            paper.class === uploadData.class &&
+            paper.year === uploadData.year
+    );
+
+    if (isDuplicate) {
+        if (
+            !window.confirm(
+                'A paper with the same title, class, and year already exists. Are you sure you want to upload another one?'
+            )
+        ) {
+            return; // Stop the upload if user cancels
+        }
+    }
+
     const newPaper: Paper = {
       id: `local-${Date.now()}`,
       title: titleToUse,
@@ -630,7 +648,7 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
                             <p className="font-semibold text-slate-800">{paper.title}</p>
                             <p className="text-sm text-slate-500">{t(paper.source, lang)} - {new Date(paper.created_at).toLocaleString()}</p>
                         </div>
-                        <div className="space-x-3 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="space-x-3 flex-shrink-0">
                             <button onClick={() => onAssignPaper(paper)} className="text-purple-600 hover:text-purple-800 text-sm font-semibold">Assign</button>
                             <button onClick={() => setViewingPaper(paper)} className="text-indigo-600 hover:text-indigo-800 text-sm font-semibold">{t('view', lang)}</button>
                             <button onClick={() => onDeletePaper(paper.id)} className="text-red-600 hover:text-red-800 text-sm font-semibold">{t('delete', lang)}</button>
@@ -666,6 +684,7 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
     const types = viewingPaper.file_types || (viewingPaper.file_type ? [viewingPaper.file_type] : []);
 
     const hasContentToExport = (viewingPaper.questions && viewingPaper.questions.length > 0) || viewingPaper.text;
+    const questionsWithAnswers = viewingPaper.questions.filter(q => q.answer);
 
     return (
       <>
@@ -685,11 +704,30 @@ const ExamArchive: React.FC<ExamArchiveProps> = ({ papers, onDeletePaper, onUplo
           )}
 
           {viewingPaper.text && <div className="bg-slate-50 p-4 rounded-lg border mb-4"><MarkdownRenderer content={viewingPaper.text} /></div>}
-          {viewingPaper.questions.length > 0 && <div className="space-y-4 prose max-w-none prose-slate">{viewingPaper.questions.map((q, i) => (
-            <div key={q.id}>
-                {q.image_data_url && <img src={q.image_data_url} alt="Question" className="max-w-md mx-auto rounded-lg border my-2" />}
-                <p><strong>{i + 1}.</strong> {q.text} <span className="text-sm text-slate-500">({q.marks} ${t('marks', lang)})</span></p>
-            </div>))}</div>}
+          
+          {viewingPaper.questions.length > 0 && (
+            <div className="space-y-4 prose max-w-none prose-slate">
+                {viewingPaper.questions.map((q, i) => (
+                    <div key={q.id}>
+                        {q.image_data_url && <img src={q.image_data_url} alt="Question" className="max-w-md mx-auto rounded-lg border my-2" />}
+                        <p><strong>{i + 1}.</strong> {q.text} <span className="text-sm text-slate-500">({q.marks} ${t('marks', lang)})</span></p>
+                    </div>
+                ))}
+            </div>
+          )}
+
+          {questionsWithAnswers.length > 0 && (
+            <div className="mt-8 pt-4 border-t border-slate-200">
+                <h3 className="text-lg font-bold font-serif-display text-slate-800 mb-3">{t('answerKey', lang)}</h3>
+                <div className="prose max-w-none prose-slate space-y-2">
+                    {viewingPaper.questions.map((q, index) => (
+                        q.answer ? (
+                            <p key={`ans-${q.id}`}><strong>{index + 1}.</strong> {q.answer}</p>
+                        ) : null
+                    ))}
+                </div>
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap justify-end gap-3 pt-4 mt-4 border-t border-slate-200">
           {hasContentToExport && (

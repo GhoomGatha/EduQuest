@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, lazy, Suspense, useMemo } from 'react';
 import { useAuth } from './hooks/useAuth';
 import { supabase } from './services/supabaseClient';
@@ -21,6 +20,7 @@ const PracticeZone = lazy(() => import('./components/student/PracticeZone'));
 const AITutor = lazy(() => import('./components/student/AITutor'));
 const FinalExamPapers = lazy(() => import('./components/FinalExamPapers'));
 const StudentClassroom = lazy(() => import('./components/student/StudentClassroom'));
+const LiveClassView = lazy(() => import('./components/LiveClassView'));
 
 interface StudentAppProps {
   showToast: (message: string, type?: 'success' | 'error') => void;
@@ -337,26 +337,36 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   useEffect(() => {
     if (!session?.user) return;
 
-    const assignmentsChannel = supabase
-        .channel('public:assignments')
-        .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'assignments' },
-            (payload) => {
-                // RLS on assignments table means students only get notified for classrooms they are in.
-                // Re-fetching is the simplest way to update the list.
-                fetchAssignments();
-            }
-        )
-        .subscribe();
+    const subscriptions = supabase
+      .channel('student-app-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, payload => {
+        fetchAssignments();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'classrooms' }, payload => {
+        fetchJoinedClassrooms();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tutor_sessions', filter: `user_id=eq.${session.user.id}` }, payload => {
+        if (payload.eventType === 'INSERT') {
+            setTutorSessions(prev => [payload.new as TutorSession, ...prev.filter(s => s.id !== (payload.new as TutorSession).id)]);
+        } else if (payload.eventType === 'DELETE') {
+            setTutorSessions(prev => prev.filter(s => s.id !== (payload.old as TutorSession).id));
+        } else if (payload.eventType === 'UPDATE') {
+            setTutorSessions(prev => prev.map(s => s.id === (payload.new as TutorSession).id ? payload.new as TutorSession : s));
+        }
+      })
+      .subscribe();
 
     return () => {
-        supabase.removeChannel(assignmentsChannel);
+      supabase.removeChannel(subscriptions);
     };
-  }, [session, fetchAssignments]);
+  }, [session, fetchAssignments, fetchJoinedClassrooms]);
 
   const handleStartTest = (paper: Paper, assignmentId?: string) => {
     setViewState({ view: 'test', paper, assignmentId });
+  };
+  
+  const handleJoinLiveClass = (classroom: Classroom) => {
+    setViewState({ view: 'live_class', classroom });
   };
 
   const handleTestComplete = async (attempt: TestAttempt, assignmentId?: string) => {
@@ -445,7 +455,6 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
         setProfile(data);
         showToast('Profile updated!', 'success');
     } catch (err: unknown) {
-        // FIX: Added a more robust catch block to handle unknown error types safely.
         let message = 'An unknown error occurred while updating profile.';
         if (err instanceof Error) {
             message = err.message;
@@ -454,6 +463,11 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
         } else if (typeof err === 'string') {
             message = err;
         }
+        
+        if (message.toLowerCase().includes('failed to fetch')) {
+            message = "Network Error: Could not upload image. Please check your internet connection or Supabase storage CORS settings.";
+        }
+
         console.error("Error updating profile:", err);
         showToast(message, 'error');
         throw err;
@@ -618,7 +632,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   };
   
   const getActiveTab = (): StudentTab => {
-    if(viewState.view === 'test') return 'dashboard'; // Or 'practice'
+    if(viewState.view === 'test' || viewState.view === 'live_class') return 'classroom';
     if(viewState.view === 'results' && viewState.attemptId) return 'results';
     if (viewState.view === 'dashboard' || viewState.view === 'results' || viewState.view === 'settings' || viewState.view === 'practice' || viewState.view === 'ai_tutor' || viewState.view === 'test_papers' || viewState.view === 'classroom') {
         return viewState.view;
@@ -629,6 +643,13 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
   const renderContent = () => {
     if (loading) {
         return <LoadingSpinner message={t('loading', lang)} />;
+    }
+    
+    if (viewState.view === 'live_class') {
+        return <LiveClassView 
+                    classroom={viewState.classroom} 
+                    onEndSession={() => setViewState({ view: 'classroom' })} 
+                />;
     }
 
     if (viewState.view === 'test') {
@@ -666,6 +687,7 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
                     joinedClassrooms={joinedClassrooms}
                     onRefreshClassrooms={fetchJoinedClassrooms}
                     onStartTest={handleStartTest}
+                    onJoinLiveClass={handleJoinLiveClass}
                     lang={lang}
                     showToast={showToast}
                     queries={studentQueries}
@@ -737,6 +759,14 @@ const StudentApp: React.FC<StudentAppProps> = ({ showToast }) => {
         </>
     );
   };
+
+  if (viewState.view === 'live_class') {
+    return (
+        <Suspense fallback={<LoadingSpinner message="Joining live class..." />}>
+            {renderContent()}
+        </Suspense>
+    );
+  }
 
   return (
     <>

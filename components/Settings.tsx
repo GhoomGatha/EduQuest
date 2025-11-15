@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useRef } from 'react';
 import { t } from '../utils/localization';
 import { Language, Profile } from '../types';
@@ -78,7 +77,7 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
   const [isSaving, setIsSaving] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isChangePasswordModalOpen, setChangePasswordModalOpen] = useState(false);
-  const { session, setSession, setProfile } = useAuth();
+  const { session } = useAuth();
 
   const inputStyles = "w-full p-2 border rounded-lg border-slate-300 bg-slate-50 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 transition";
 
@@ -159,23 +158,25 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport, onClear, lang, 
   const handleLogout = async () => {
     setIsLoggingOut(true);
 
+    // This session info is used for the "Last Login" feature.
     if (session?.user?.id) {
         const currentSessionKey = `eduquest_current_session_start_${session.user.id}`;
         sessionStorage.removeItem(currentSessionKey);
     }
 
+    // Trigger the sign-out process.
     const { error } = await supabase.auth.signOut();
 
+    // If there's an error, the user is still logged in. Show an error
+    // and reset the loading state so they can try again.
     if (error) {
         console.error('Logout error:', error.message);
         showToast(`Logout failed: ${error.message}. Please try again.`, 'error');
         setIsLoggingOut(false);
-    } else {
-        // Manually clear the session to trigger immediate UI update to the login page.
-        // The onAuthStateChange listener will also fire, but this makes the UI feel instant.
-        setSession(null);
-        setProfile(null);
     }
+    // On success, the onAuthStateChange listener in index.tsx is the single
+    // source of truth and will handle clearing the session and profile, which
+    // causes this component to unmount automatically.
   };
 
   const buttonBaseStyles = "mt-2 sm:mt-0 w-full sm:w-auto px-4 py-2 font-semibold text-white rounded-lg shadow-sm hover:shadow-md hover:-translate-y-px transition-all";

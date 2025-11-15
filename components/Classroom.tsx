@@ -1,12 +1,12 @@
-
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Classroom, Language, Profile, ClassroomStudent, StudentQuery, Assignment, Paper } from '../types';
+import { Classroom, Language, Profile, ClassroomStudent, StudentQuery, Assignment, Paper, AssignmentSubmission } from '../types';
 import { t } from '../utils/localization';
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../services/supabaseClient';
 import Modal from './Modal';
 import { CLASSES } from '../constants';
 import AnswerQueryModal from './AnswerQueryModal';
+import LiveClassView from './LiveClassView';
 
 interface ClassroomProps {
     lang: Language;
@@ -23,6 +23,7 @@ const ClassroomComponent: React.FC<ClassroomProps> = ({ lang, showToast, student
     const { user } = useAuth();
     const [classrooms, setClassrooms] = useState<Classroom[]>([]);
     const [assignments, setAssignments] = useState<Assignment[]>([]);
+    const [submissions, setSubmissions] = useState<AssignmentSubmission[]>([]);
     const [loadingAssignments, setLoadingAssignments] = useState(true);
     const [isLoading, setIsLoading] = useState(true);
     const [selectedClassroom, setSelectedClassroom] = useState<Classroom | null>(null);
@@ -30,6 +31,7 @@ const ClassroomComponent: React.FC<ClassroomProps> = ({ lang, showToast, student
     const [loadingStudents, setLoadingStudents] = useState(false);
     const [isCreateModalOpen, setCreateModalOpen] = useState(false);
     const [answeringQuery, setAnsweringQuery] = useState<StudentQuery | null>(null);
+    const [viewMode, setViewMode] = useState<'list' | 'detail' | 'live'>('list');
 
     const fetchClassrooms = useCallback(async () => {
         if (!user) return;
@@ -64,29 +66,59 @@ const ClassroomComponent: React.FC<ClassroomProps> = ({ lang, showToast, student
         setLoadingAssignments(false);
     }, [user, showToast]);
 
+    const fetchSubmissions = useCallback(async () => {
+        if (!user) return;
+        const { data, error } = await supabase
+            .from('assignment_submissions')
+            .select('*')
+            .eq('teacher_id', user.id);
+        if (error) {
+            showToast(`Error fetching submissions: ${error.message}`, 'error');
+        } else {
+            setSubmissions(data || []);
+        }
+    }, [user, showToast]);
+
     useEffect(() => {
         fetchClassrooms();
         fetchAssignments();
-    }, [fetchClassrooms, fetchAssignments]);
+        fetchSubmissions();
+    }, [fetchClassrooms, fetchAssignments, fetchSubmissions]);
 
     useEffect(() => {
         if (!user) return;
-        const channel = supabase.channel('public:assignments')
+        const assignmentsChannel = supabase.channel('public:assignments')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments', filter: `teacher_id=eq.${user.id}` }, 
             (payload) => {
-                console.log('Assignment change detected, refetching.');
                 fetchAssignments();
+            })
+            .subscribe();
+        
+        const submissionsChannel = supabase.channel('public:assignment_submissions')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'assignment_submissions', filter: `teacher_id=eq.${user.id}` }, 
+            (payload) => {
+                fetchSubmissions();
+            })
+            .subscribe();
+        
+        const classroomsChannel = supabase.channel('public:classrooms')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'classrooms', filter: `teacher_id=eq.${user.id}` },
+            (payload) => {
+                fetchClassrooms();
             })
             .subscribe();
 
         return () => {
-            supabase.removeChannel(channel);
+            supabase.removeChannel(assignmentsChannel);
+            supabase.removeChannel(submissionsChannel);
+            supabase.removeChannel(classroomsChannel);
         };
-    }, [user, fetchAssignments]);
+    }, [user, fetchAssignments, fetchSubmissions, fetchClassrooms]);
 
 
     const handleViewClassroom = async (classroom: Classroom) => {
         setSelectedClassroom(classroom);
+        setViewMode('detail');
         setLoadingStudents(true);
         const { data: studentRelations, error: relationsError } = await supabase
             .from('classroom_students')
@@ -196,20 +228,45 @@ const ClassroomComponent: React.FC<ClassroomProps> = ({ lang, showToast, student
             setAnsweringQuery(null);
         }
     };
+    
+    const handleStartLiveSession = async () => {
+        if (!selectedClassroom) return;
+        const { error } = await supabase.from('classrooms').update({ is_live: true }).eq('id', selectedClassroom.id);
+        if (error) {
+            showToast(`Failed to start live session: ${error.message}`, 'error');
+        } else {
+            setViewMode('live');
+        }
+    };
 
-    if (selectedClassroom) {
+    const handleEndLiveSession = async () => {
+        if (!selectedClassroom) return;
+        const { error } = await supabase.from('classrooms').update({ is_live: false }).eq('id', selectedClassroom.id);
+         if (error) {
+            showToast(`Failed to end live session: ${error.message}`, 'error');
+        }
+        setViewMode('detail');
+    };
+
+    if (viewMode === 'live' && selectedClassroom) {
+        return <LiveClassView classroom={selectedClassroom} onEndSession={handleEndLiveSession} />;
+    }
+
+    if (viewMode === 'detail' && selectedClassroom) {
         const assignmentsForClassroom = assignments.filter(a => a.classroom_id === selectedClassroom.id);
         return <ClassroomDetailView 
                     classroom={selectedClassroom} 
                     students={students} 
                     isLoading={loadingStudents} 
-                    onBack={() => setSelectedClassroom(null)} 
+                    onBack={() => { setSelectedClassroom(null); setViewMode('list'); }} 
                     lang={lang} 
                     showToast={showToast} 
                     onAssignPaper={onAssignPaper} 
+                    onStartLiveClass={handleStartLiveSession}
                     assignments={assignmentsForClassroom}
                     loadingAssignments={loadingAssignments}
                     onRefreshAssignments={fetchAssignments}
+                    submissions={submissions}
                 />;
     }
 
@@ -337,12 +394,110 @@ interface ClassroomDetailViewProps {
     lang: Language;
     showToast: (message: string, type?: 'success' | 'error') => void;
     onAssignPaper: (classroom: Classroom) => void;
+    onStartLiveClass: () => void;
     assignments: Assignment[];
     loadingAssignments: boolean;
     onRefreshAssignments: () => void;
+    submissions: AssignmentSubmission[];
 }
 
-const ClassroomDetailView: React.FC<ClassroomDetailViewProps> = ({ classroom, students, isLoading, onBack, lang, showToast, onAssignPaper, assignments, loadingAssignments, onRefreshAssignments }) => {
+const AssignmentStatus: React.FC<{
+    assignment: Assignment;
+    students: ClassroomStudent[];
+    submissions: AssignmentSubmission[];
+    onDelete: (id: string) => void;
+}> = ({ assignment, students, submissions, onDelete }) => {
+    const [sortBy, setSortBy] = useState<'name' | 'status'>('name');
+    const submissionsForThisAssignment = submissions.filter(s => s.assignment_id === assignment.id);
+
+    const sortedStudents = useMemo(() => {
+        const studentsCopy = [...students];
+        studentsCopy.sort((a, b) => {
+            if (sortBy === 'status') {
+                const aSubmitted = submissionsForThisAssignment.some(s => s.student_id === a.student_id);
+                const bSubmitted = submissionsForThisAssignment.some(s => s.student_id === b.student_id);
+                // Sort "Not Submitted" before "Submitted" to bring them to attention
+                if (!aSubmitted && bSubmitted) return -1;
+                if (aSubmitted && !bSubmitted) return 1;
+            }
+            // Secondary sort by name for both cases
+            return a.profile.full_name.localeCompare(b.profile.full_name);
+        });
+        return studentsCopy;
+    }, [students, sortBy, submissionsForThisAssignment]);
+
+
+    return (
+        <details className="p-3 bg-slate-50 rounded-lg border group">
+            <summary className="flex justify-between items-center cursor-pointer">
+                <div>
+                    <h4 className="font-bold text-slate-800">{assignment.paper_snapshot.title}</h4>
+                    <p className="text-xs text-slate-500">
+                        Assigned: {new Date(assignment.created_at).toLocaleDateString()} | {submissionsForThisAssignment.length} of {students.length} submitted
+                    </p>
+                    {assignment.due_date && <p className="text-xs text-red-500 font-medium">Due: {new Date(assignment.due_date).toLocaleString()}</p>}
+                </div>
+                <div className="flex items-center gap-2">
+                     <button
+                        onClick={(e) => { e.preventDefault(); onDelete(assignment.id); }}
+                        className="text-xs font-semibold text-red-600 hover:text-red-800 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                        Cancel
+                    </button>
+                    <div className="transition-transform group-open:rotate-180">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+                    </div>
+                </div>
+            </summary>
+            <div className="mt-4 pt-3 border-t border-slate-200">
+                {students.length > 0 ? (
+                    <>
+                        <div className="flex justify-end items-center gap-2 mb-3">
+                            <span className="text-xs font-semibold text-slate-500">Sort by:</span>
+                            <button 
+                                onClick={() => setSortBy('name')}
+                                className={`px-2 py-1 text-xs font-semibold rounded-md transition-colors ${sortBy === 'name' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'}`}
+                            >
+                                Name
+                            </button>
+                            <button 
+                                onClick={() => setSortBy('status')}
+                                className={`px-2 py-1 text-xs font-semibold rounded-md transition-colors ${sortBy === 'status' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'}`}
+                            >
+                                Status
+                            </button>
+                        </div>
+                        <ul className="space-y-2">
+                            {sortedStudents.map(student => {
+                                const submission = submissionsForThisAssignment.find(s => s.student_id === student.student_id);
+                                return (
+                                    <li key={student.student_id} className="flex items-center justify-between text-sm p-2 rounded-md hover:bg-slate-100">
+                                        <div className="flex items-center gap-2">
+                                            <img src={student.profile.avatar_url || `https://api.dicebear.com/8.x/initials/svg?seed=${student.profile.full_name}`} alt={student.profile.full_name} className="h-6 w-6 rounded-full" />
+                                            <span>{student.profile.full_name}</span>
+                                        </div>
+                                        {submission ? (
+                                            <div className="text-right">
+                                                <span className="font-semibold text-green-700">Submitted</span>
+                                                <p className="text-xs text-slate-500">Score: {submission.attempt_data.score}/{submission.attempt_data.totalMarks}</p>
+                                            </div>
+                                        ) : (
+                                            <span className="font-semibold text-yellow-700">Not Submitted</span>
+                                        )}
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    </>
+                ) : (
+                    <p className="text-sm text-slate-500 text-center">No students in this classroom roster.</p>
+                )}
+            </div>
+        </details>
+    );
+};
+
+const ClassroomDetailView: React.FC<ClassroomDetailViewProps> = ({ classroom, students, isLoading, onBack, lang, showToast, onAssignPaper, onStartLiveClass, assignments, loadingAssignments, onRefreshAssignments, submissions }) => {
 
     const handleDeleteAssignment = async (assignmentId: string) => {
         if (window.confirm("Are you sure you want to cancel this assignment? This will remove it for all students.")) {
@@ -393,35 +548,35 @@ const ClassroomDetailView: React.FC<ClassroomDetailViewProps> = ({ classroom, st
                  <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mt-11">
                     <div className="flex justify-between items-center mb-1">
                         <h2 className="text-2xl font-bold font-serif-display text-slate-800">Assignments</h2>
-                        <button 
-                            onClick={() => onAssignPaper(classroom)}
-                            className="flex items-center gap-2 px-3 py-2 bg-indigo-100 text-indigo-700 font-semibold rounded-lg hover:bg-indigo-200 transition-colors text-sm"
-                        >
-                           <span className="text-lg">➕</span> Assign New
-                        </button>
+                        <div className="flex gap-2">
+                             <button
+                                onClick={onStartLiveClass}
+                                title="Start a Live Class"
+                                className="w-10 h-10 flex items-center justify-center bg-red-100 text-red-700 font-semibold rounded-full hover:bg-red-200 transition-colors"
+                            >
+                               <span className="text-lg animate-pulse">🔴</span>
+                            </button>
+                            <button
+                                onClick={() => onAssignPaper(classroom)}
+                                title="Assign a New Paper"
+                                className="w-10 h-10 flex items-center justify-center bg-indigo-100 text-indigo-700 font-semibold rounded-full hover:bg-indigo-200 transition-colors"
+                            >
+                               <span className="text-lg">➕</span>
+                            </button>
+                        </div>
                     </div>
                     <p className="text-slate-500">Papers assigned to this class.</p>
                     <div className="mt-4">
                         {loadingAssignments ? <p>Loading assignments...</p> : assignments.length > 0 ? (
                             <div className="space-y-3 max-h-[28rem] overflow-y-auto pr-2">
                                 {assignments.map(assignment => (
-                                    <div key={assignment.id} className="p-3 bg-slate-50 rounded-lg border">
-                                        <div className="flex justify-between items-start">
-                                            <div>
-                                                <h4 className="font-bold text-slate-800">{assignment.paper_snapshot.title}</h4>
-                                                <p className="text-xs text-slate-500">Assigned on: {new Date(assignment.created_at).toLocaleDateString()}</p>
-                                                {assignment.due_date && <p className="text-xs text-red-500 font-medium">Due: {new Date(assignment.due_date).toLocaleString()}</p>}
-                                            </div>
-                                            <div className="flex-shrink-0 ml-4">
-                                                <button
-                                                    onClick={() => handleDeleteAssignment(assignment.id)}
-                                                    className="text-sm font-semibold text-red-600 hover:text-red-800"
-                                                >
-                                                    Cancel
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
+                                    <AssignmentStatus
+                                        key={assignment.id}
+                                        assignment={assignment}
+                                        students={students}
+                                        submissions={submissions}
+                                        onDelete={handleDeleteAssignment}
+                                    />
                                 ))}
                             </div>
                         ) : (
